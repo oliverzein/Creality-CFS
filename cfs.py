@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+import copy as _copy
 import time
 from pathlib import Path
 
@@ -156,6 +157,48 @@ def bump_version(db, version=9876543210):
 
 def count_autofix(db):
     db["result"]["count"] = len(db["result"]["list"])
+
+
+TEMPLATE_ID = "01001"  # Hyper PLA
+
+
+def build_entry(db, values):
+    template = find_entry(db, TEMPLATE_ID)
+    if template is None:
+        # fallback: first PLA entry
+        template = next((e for e in db["result"]["list"]
+                         if e.get("base", {}).get("meterialType") == "PLA"), None)
+        if template is None:
+            die(EXIT_DB, f"Template-Eintrag {TEMPLATE_ID} fehlt und kein PLA-Fallback gefunden")
+    entry = _copy.deepcopy(template)
+    b = entry["base"]
+    b["id"] = str(values["id"])
+    b["brand"] = values["brand"]
+    b["name"] = values["name"]
+    b["meterialType"] = values["type"]
+    if "density" in values:
+        b["density"] = values["density"]
+    b["minTemp"] = values["minTemp"]
+    b["maxTemp"] = values["maxTemp"]
+    b["dryingTemp"] = values.get("dryingTemp", 0)
+    b["dryingTime"] = values.get("dryingTime", 0)
+    if "color" in values:
+        b["colors"] = [values["color"]]
+    kv = entry["kvParam"]
+    kv["nozzle_temperature"] = str(values["maxTemp"])
+    kv["nozzle_temperature_range_high"] = str(values["maxTemp"])
+    kv["nozzle_temperature_range_low"] = str(values["minTemp"])
+    kv["filament_type"] = values["type"]
+    kv["filament_vendor"] = values["brand"]
+    if "density" in values:
+        kv["filament_density"] = str(values["density"])
+    if "flowRatio" in values:
+        kv["filament_flow_ratio"] = str(values["flowRatio"])
+    if "pa" in values:
+        kv["pressure_advance"] = str(values["pa"])
+    if "maxVolumetric" in values:
+        kv["filament_max_volumetric_speed"] = str(values["maxVolumetric"])
+    return entry
 
 
 # === Validation Section ===
