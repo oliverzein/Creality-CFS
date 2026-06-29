@@ -148,3 +148,15 @@ def test_cmd_delete_confirm_flag(mock_config, mock_db, tmp_path):
             cfs.cmd_delete(mock_config, args)
     db = cfs.load_db(str(cache))
     assert cfs.find_entry(db, "99001") is None
+
+
+def test_cmd_delete_confirm_mismatch(mock_config, mock_db, tmp_path):
+    cache = tmp_path / "db.json"
+    cfs.save_db(str(cache), mock_db)
+    with patch.object(cfs, "LOCAL_CACHE", cache):
+        with patch.object(cfs, "LOCAL_CACHE_META", tmp_path / "db.meta.json"):
+            cfs._save_cache_meta(mock_db)
+            args = _make_delete_args("99001", confirm="99999", yes=False)
+            with pytest.raises(SystemExit) as exc:
+                cfs.cmd_delete(mock_config, args)
+            assert exc.value.code == cfs.EXIT_ABORT
