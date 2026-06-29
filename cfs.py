@@ -13,7 +13,9 @@ import copy as _copy
 import time
 from pathlib import Path
 
+import requests
 import websocket
+from bs4 import BeautifulSoup
 
 EXIT_OK = 0
 EXIT_CONFIG = 1
@@ -368,6 +370,58 @@ def verify_entry(materials, entry_id):
 def verify_version(db, expected):
     actual = db.get("result", {}).get("version") if isinstance(db, dict) else None
     return actual == expected
+
+
+# === Web-Lookup Section ===
+
+WEBLOOKUP_BASE = "https://3dfilamentprofiles.com"
+
+
+def lookup_filament(brand, name):
+    url = f"{WEBLOOKUP_BASE}/{brand.lower()}/{name.lower().replace(' ', '-')}"
+    try:
+        resp = requests.get(url, timeout=15, headers={"User-Agent": "cfs.py/1.0"})
+    except Exception as e:
+        die(EXIT_WEBLOOKUP, f"Web-Lookup fehlgeschlagen ({url}): {e}")
+    if resp.status_code != 200:
+        die(EXIT_WEBLOOKUP, f"Profil nicht gefunden (HTTP {resp.status_code}): {url}")
+    soup = BeautifulSoup(resp.text, "html.parser")
+    profile = soup.find(class_="filament-profile")
+    if profile is None:
+        die(EXIT_WEBLOOKUP, f"Parse fehlgeschlagen — kein Profil-Container auf {url}")
+    try:
+        def txt(cls):
+            el = profile.find(class_=cls)
+            return el.text.strip() if el else None
+        density = txt("density")
+        min_t = txt("min-temp")
+        max_t = txt("max-temp")
+        flow = txt("flow-ratio")
+        pa = txt("pressure-advance")
+        dry_t = txt("drying-temp")
+        dry_time = txt("drying-time")
+        result = {
+            "brand": brand,
+            "name": name,
+            "type": txt("type") or "PLA",
+        }
+        if density:
+            result["density"] = float(density)
+        if min_t:
+            result["minTemp"] = int(min_t)
+        if max_t:
+            result["maxTemp"] = int(max_t)
+        if flow:
+            result["flowRatio"] = float(flow)
+        if pa:
+            result["pa"] = float(pa)
+        if dry_t:
+            result["dryingTemp"] = int(dry_t)
+        if dry_time:
+            result["dryingTime"] = int(dry_time)
+        return result
+    except (ValueError, AttributeError) as e:
+        die(EXIT_WEBLOOKUP, f"Parse fehlgeschlagen: {e}")
 
 
 def main():
