@@ -1,0 +1,10 @@
+{
+  "printer_ip": "192.168.0.101",
+  "ssh_user": "root",
+  "ssh_password": "your_password",
+  "db_remote_path": "/mnt/UDISK/creality/userdata/box/material_database.json",
+  "ws_port": 9999,
+  "version_override": 9876543210,
+  "id_range_start": 99001,
+  "orcaslicer_config_dir": "~/.config/OrcaSlicer"
+}
