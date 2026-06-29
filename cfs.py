@@ -606,11 +606,94 @@ def _interactive_collect():
 
 
 def cmd_edit(config, args):
-    print("edit: not implemented yet (Task 12)")
+    # 1. Parse changes
+    if args.values:
+        try:
+            changes = json.loads(args.values)
+        except json.JSONDecodeError as e:
+            die(EXIT_VALIDATE, f"--values JSON parse error: {e}")
+    elif args.interactive:
+        changes = _interactive_edit(config, args.id)
+    else:
+        die(EXIT_VALIDATE, "Änderungen nötig: --values JSON oder --interactive")
+
+    # 2. Load DB
+    db = _get_cached_db(config)
+
+    # 3. Find entry (check exists before patch)
+    e = find_entry(db, args.id)
+    if e is None:
+        die(EXIT_DB, f"Eintrag nicht gefunden: {args.id}")
+
+    # 4. Show before/after plan
+    print(f"Edit Eintrag {args.id}:")
+    print(f"  Vorher: {e['base']['name']} ({e['base']['brand']})")
+    print(f"  Änderungen: {json.dumps(changes, indent=2)}")
+    if not args.yes:
+        resp = input("Änderung anwenden? (y/n): ")
+        if resp.lower() != "y":
+            die(EXIT_ABORT, "Abgebrochen durch Benutzer")
+
+    # 5. Patch (patch_entry checks stock ID protection)
+    patch_entry(db, args.id, changes)
+    save_db(str(LOCAL_CACHE), db)
+    print(f"Eintrag {args.id} geändert (lokal). 'push' zum Hochladen.")
+
+
+def _interactive_edit(config, entry_id):
+    """Interactive edit prompt for an existing entry."""
+    db = _get_cached_db(config)
+    e = find_entry(db, entry_id)
+    if e is None:
+        die(EXIT_DB, f"Eintrag nicht gefunden: {entry_id}")
+    b = e["base"]
+    print(f"Edit {entry_id} — {b['name']} ({b['brand']})")
+    print("Leer = unverändert.")
+    changes = {}
+    base_changes = {}
+    name = input(f"Name [{b['name']}]: ").strip()
+    if name:
+        base_changes["name"] = name
+    min_t = input(f"minTemp [{b['minTemp']}]: ").strip()
+    if min_t:
+        base_changes["minTemp"] = int(min_t)
+    max_t = input(f"maxTemp [{b['maxTemp']}]: ").strip()
+    if max_t:
+        base_changes["maxTemp"] = int(max_t)
+    if base_changes:
+        changes["base"] = base_changes
+    kv_changes = {}
+    temp = input(f"nozzle_temperature [{e['kvParam'].get('nozzle_temperature', '?')}]: ").strip()
+    if temp:
+        kv_changes["nozzle_temperature"] = temp
+    if kv_changes:
+        changes["kvParam"] = kv_changes
+    return changes
 
 
 def cmd_delete(config, args):
-    print("delete: not implemented yet (Task 12)")
+    # 1. Load DB
+    db = _get_cached_db(config)
+
+    # 2. Find entry
+    e = find_entry(db, args.id)
+    if e is None:
+        die(EXIT_DB, f"Eintrag nicht gefunden: {args.id}")
+
+    # 3. Confirm
+    if args.confirm:
+        if args.confirm != args.id:
+            die(EXIT_ABORT, f"--confirm muss ID '{args.id}' entsprechen, got '{args.confirm}'")
+    elif not args.yes:
+        print(f"Lösche Eintrag {args.id}: {e['base']['name']} ({e['base']['brand']})")
+        resp = input("Wirklich löschen? (y/n): ")
+        if resp.lower() != "y":
+            die(EXIT_ABORT, "Abgebrochen durch Benutzer")
+
+    # 4. Remove (remove_entry checks stock ID protection)
+    remove_entry(db, args.id)
+    save_db(str(LOCAL_CACHE), db)
+    print(f"Eintrag {args.id} gelöscht (lokal). 'push' zum Hochladen.")
 
 
 def main():
