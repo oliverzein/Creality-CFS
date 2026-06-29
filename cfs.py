@@ -76,6 +76,45 @@ def check_dependencies():
             die(EXIT_CONFIG, f"Python-Paket '{pkg}' fehlt: pip install requests beautifulsoup4 websocket-client")
 
 
+# === DB Section ===
+
+def load_db(path):
+    p = Path(path)
+    if not p.exists():
+        die(EXIT_DB, f"DB-Datei nicht gefunden: {p}")
+    try:
+        with open(p) as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        die(EXIT_DB, f"DB nicht parsebar: {e}. Backup wiederherstellen.")
+
+
+def save_db(path, db):
+    with open(path, "w") as f:
+        json.dump(db, f, indent=2, ensure_ascii=False)
+
+
+def find_entry(db, entry_id):
+    for e in db["result"]["list"]:
+        if e.get("base", {}).get("id") == entry_id:
+            return e
+    return None
+
+
+def find_custom_entries(db):
+    return [e for e in db["result"]["list"]
+            if e.get("base", {}).get("id", "").startswith("99")]
+
+
+def next_free_id(db, start=99001):
+    used = {int(e["base"]["id"]) for e in db["result"]["list"]
+            if e.get("base", {}).get("id", "").isdigit()}
+    candidate = start
+    while candidate in used:
+        candidate += 1
+    return candidate
+
+
 def main():
     check_dependencies()
     parser = argparse.ArgumentParser(prog="cfs.py", description="Creality K2 Custom Filament CLI")
