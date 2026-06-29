@@ -424,6 +424,62 @@ def lookup_filament(brand, name):
         die(EXIT_WEBLOOKUP, f"Parse fehlgeschlagen: {e}")
 
 
+# === OrcaSlicer Section ===
+
+def find_presets(config_dir, vendor, filament_type):
+    d = Path(os.path.expanduser(config_dir))
+    if not d.exists():
+        return []
+    presets = []
+    for p in d.glob("*.json"):
+        try:
+            data = json.loads(p.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if data.get("type") == filament_type:
+            data.setdefault("system", False)
+            presets.append(data)
+    return presets
+
+
+def simulate_match(presets, brand_name, vendor, filament_type):
+    if not presets:
+        return {"matches": [], "ties": [], "fallback": "Generic"}
+    matches = []
+    bn_lower = brand_name.lower()
+    v_lower = vendor.lower()
+    for p in presets:
+        if p.get("type") != filament_type:
+            continue  # hard filter
+        p_name_lower = p["name"].lower()
+        score = 0
+        if bn_lower in p_name_lower:
+            score += 20
+        if v_lower in p_name_lower:
+            score += 10
+        matches.append({"preset": p["name"], "score": score, "system": p.get("system", False)})
+    matches.sort(key=lambda x: (-x["score"], not x["system"]))
+    if not matches:
+        return {"matches": [], "ties": [], "fallback": "Generic"}
+    top = matches[0]["score"]
+    ties = [m for m in matches if m["score"] == top and top > 0]
+    recommendation = "Eindeutiger Match"
+    if len(ties) > 1:
+        recommendation = f"Tie! Deaktiviere in OrcaSlicer: {', '.join(m['preset'] for m in ties[1:])}"
+    return {"matches": matches, "ties": ties, "recommendation": recommendation}
+
+
+def orcacheck(config, values):
+    config_dir = config.get("orcaslicer_config_dir", "~/.config/OrcaSlicer")
+    expanded = os.path.expanduser(config_dir)
+    if not Path(expanded).exists():
+        return {"warning": f"OrcaSlicer-Dir nicht gefunden: {expanded}. orcacheck übersprungen."}
+    presets = find_presets(config_dir, values["brand"], values["type"])
+    if not presets:
+        return {"warning": f"Kein Preset für {values['brand']}/{values['type']} installiert. OrcaSlicer fällt auf Generic zurück."}
+    return simulate_match(presets, values["name"], values["brand"], values["type"])
+
+
 def main():
     check_dependencies()
     parser = argparse.ArgumentParser(prog="cfs.py", description="Creality K2 Custom Filament CLI")
