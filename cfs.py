@@ -510,7 +510,99 @@ def _get_cached_db(config):
 
 
 def cmd_add(config, args):
-    print("add: not implemented yet (Task 11)")
+    # 1. Gather values
+    if args.values:
+        try:
+            values = json.loads(args.values)
+        except json.JSONDecodeError as e:
+            die(EXIT_VALIDATE, f"--values JSON parse error: {e}")
+    elif args.auto_lookup:
+        if not args.brand or not args.name:
+            die(EXIT_VALIDATE, "--auto-lookup erfordert --brand und --name")
+        values = lookup_filament(args.brand, args.name)
+        print(f"Web-Lookup Ergebnis:\n{json.dumps(values, indent=2)}")
+    elif args.interactive:
+        values = _interactive_collect()
+    else:
+        die(EXIT_VALIDATE, "Werte nötig: --values JSON, --auto-lookup, oder --interactive")
+
+    # 2. Validate
+    errors, warnings = validate_entry(values)
+    if errors:
+        print("Validierungsfehler:")
+        for e in errors:
+            print(f"  - {e}")
+        die(EXIT_VALIDATE, "Validierung fehlgeschlagen")
+    if warnings:
+        print("Warnungen:")
+        for w in warnings:
+            print(f"  - {w}")
+
+    # 3. Load DB
+    db = _get_cached_db(config)
+
+    # 4. OrcaSlicer check (safety: always prompt on tie, even with --yes)
+    orca_result = orcacheck(config, values)
+    if "ties" in orca_result and len(orca_result.get("ties", [])) >= 1:
+        print(f"OrcaSlicer-Warnung: {orca_result['recommendation']}")
+        resp = input("Trotzdem fortfahren? (y/n): ")
+        if resp.lower() != "y":
+            die(EXIT_ABORT, "Abgebrochen durch Benutzer")
+
+    # 5. Assign ID
+    entry_id = next_free_id(db, config["id_range_start"])
+    values["id"] = entry_id
+
+    # 6. Build entry
+    entry = build_entry(db, values)
+
+    # 7. Show plan + confirm
+    print(f"\nNeuer Eintrag:")
+    print(f"  ID:     {entry_id}")
+    print(f"  Brand:  {values['brand']}")
+    print(f"  Name:   {values['name']}")
+    print(f"  Type:   {values['type']}")
+    print(f"  Temp:   {values['minTemp']}-{values['maxTemp']}°C")
+    if not args.yes:
+        resp = input("Eintrag hinzufügen? (y/n): ")
+        if resp.lower() != "y":
+            die(EXIT_ABORT, "Abgebrochen durch Benutzer")
+
+    # 8. Insert + save
+    insert_entry(db, entry)
+    save_db(str(LOCAL_CACHE), db)
+    print(f"Eintrag {entry_id} hinzugefügt (lokal). 'push' zum Hochladen.")
+    return str(entry_id)
+
+
+def _interactive_collect():
+    """Interactive prompt for filament values."""
+    print("Interaktive Eingabe (leer = Default/optional):")
+    values = {}
+    values["brand"] = input("Brand: ").strip()
+    values["name"] = input("Name: ").strip()
+    values["type"] = input("Type (PLA/PETG/ABS/...): ").strip() or "PLA"
+    values["minTemp"] = int(input("minTemp (°C): ").strip())
+    values["maxTemp"] = int(input("maxTemp (°C): ").strip())
+    density = input("density (optional, Enter=skip): ").strip()
+    if density:
+        values["density"] = float(density)
+    pa = input("pressure_advance (optional): ").strip()
+    if pa:
+        values["pa"] = float(pa)
+    flow = input("flow_ratio (optional): ").strip()
+    if flow:
+        values["flowRatio"] = float(flow)
+    dry_t = input("dryingTemp (optional): ").strip()
+    if dry_t:
+        values["dryingTemp"] = int(dry_t)
+    dry_time = input("dryingTime (optional): ").strip()
+    if dry_time:
+        values["dryingTime"] = int(dry_time)
+    color = input("color hex (optional, #ffffff): ").strip()
+    if color:
+        values["color"] = color
+    return values
 
 
 def cmd_edit(config, args):
