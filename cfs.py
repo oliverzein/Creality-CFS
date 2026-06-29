@@ -13,6 +13,8 @@ import copy as _copy
 import time
 from pathlib import Path
 
+import websocket
+
 EXIT_OK = 0
 EXIT_CONFIG = 1
 EXIT_SSH = 2
@@ -329,6 +331,43 @@ def ssh_reboot(config):
         )
     except (subprocess.TimeoutExpired, Exception):
         pass  # expected — connection drops
+
+
+# === WS Section ===
+
+def ws_request(config, method, params):
+    uri = f"ws://{config['printer_ip']}:{config['ws_port']}"
+    payload = json.dumps({"method": method, "params": params})
+    try:
+        ws = websocket.create_connection(uri, timeout=10)
+        ws.send(payload)
+        raw = ws.recv()
+        ws.close()
+    except Exception as e:
+        die(EXIT_WS, f"WS-Verbindung fehlgeschlagen ({uri}): {e}")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        die(EXIT_WS, f"WS-Response nicht parsebar: {e}")
+
+
+def req_materials(config):
+    resp = ws_request(config, "get", {"reqMaterials": 1})
+    # Response shape: {"retMaterials": [...]} or nested
+    if isinstance(resp, dict) and "retMaterials" in resp:
+        return resp["retMaterials"]
+    if isinstance(resp, dict) and "result" in resp and "list" in resp["result"]:
+        return resp["result"]["list"]
+    die(EXIT_WS, f"WS-Response unerwartet: {resp}")
+
+
+def verify_entry(materials, entry_id):
+    return any(m.get("base", {}).get("id") == entry_id for m in materials)
+
+
+def verify_version(db, expected):
+    actual = db.get("result", {}).get("version") if isinstance(db, dict) else None
+    return actual == expected
 
 
 def main():
