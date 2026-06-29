@@ -65,3 +65,66 @@ def test_load_db_missing(tmp_path):
     with pytest.raises(SystemExit) as exc:
         cfs.load_db(str(p))
     assert exc.value.code == cfs.EXIT_DB
+
+
+def test_insert_entry(mock_db):
+    entry = {"base": {"id": "99002", "brand": "eSun", "name": "eSun PLA+"}}
+    cfs.insert_entry(mock_db, entry)
+    assert mock_db["result"]["count"] == 3
+    assert cfs.find_entry(mock_db, "99002") is not None
+
+
+def test_insert_entry_duplicate_id(mock_db):
+    entry = {"base": {"id": "99001"}}
+    with pytest.raises(SystemExit) as exc:
+        cfs.insert_entry(mock_db, entry)
+    assert exc.value.code == cfs.EXIT_DB
+
+
+def test_patch_entry_existing(mock_db):
+    cfs.patch_entry(mock_db, "99001", {"base": {"maxTemp": 225}})
+    e = cfs.find_entry(mock_db, "99001")
+    assert e["base"]["maxTemp"] == 225
+    # other base fields preserved
+    assert e["base"]["brand"] == "Sunlu"
+
+
+def test_patch_entry_nonexistent(mock_db):
+    with pytest.raises(SystemExit) as exc:
+        cfs.patch_entry(mock_db, "99999", {"base": {"maxTemp": 225}})
+    assert exc.value.code == cfs.EXIT_DB
+
+
+def test_patch_entry_stock_id_refused(mock_db):
+    with pytest.raises(SystemExit) as exc:
+        cfs.patch_entry(mock_db, "01001", {"base": {"maxTemp": 225}})
+    assert exc.value.code == cfs.EXIT_DB
+
+
+def test_remove_entry(mock_db):
+    cfs.remove_entry(mock_db, "99001")
+    assert mock_db["result"]["count"] == 1
+    assert cfs.find_entry(mock_db, "99001") is None
+
+
+def test_remove_entry_stock_id_refused(mock_db):
+    with pytest.raises(SystemExit) as exc:
+        cfs.remove_entry(mock_db, "01001")
+    assert exc.value.code == cfs.EXIT_DB
+
+
+def test_remove_entry_nonexistent(mock_db):
+    with pytest.raises(SystemExit) as exc:
+        cfs.remove_entry(mock_db, "99999")
+    assert exc.value.code == cfs.EXIT_DB
+
+
+def test_bump_version(mock_db):
+    cfs.bump_version(mock_db, 9876543210)
+    assert mock_db["result"]["version"] == 9876543210
+
+
+def test_count_autofix(mock_db):
+    mock_db["result"]["count"] = 99  # wrong
+    cfs.count_autofix(mock_db)
+    assert mock_db["result"]["count"] == 2

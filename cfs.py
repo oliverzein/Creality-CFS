@@ -115,6 +115,49 @@ def next_free_id(db, start=99001):
     return candidate
 
 
+def _is_custom_id(entry_id):
+    return entry_id.startswith("99")
+
+
+def insert_entry(db, entry):
+    entry_id = entry["base"]["id"]
+    if find_entry(db, entry_id) is not None:
+        die(EXIT_DB, f"ID-Kollision: {entry_id} existiert bereits")
+    db["result"]["list"].append(entry)
+    count_autofix(db)
+
+
+def patch_entry(db, entry_id, changes):
+    if not _is_custom_id(entry_id):
+        die(EXIT_DB, f"Stock-Einträge geschützt (nicht 99xxx): {entry_id}")
+    e = find_entry(db, entry_id)
+    if e is None:
+        die(EXIT_DB, f"Eintrag nicht gefunden: {entry_id}")
+    for section, fields in changes.items():
+        if section not in e:
+            e[section] = {}
+        e[section].update(fields)
+    count_autofix(db)
+
+
+def remove_entry(db, entry_id):
+    if not _is_custom_id(entry_id):
+        die(EXIT_DB, f"Stock-Einträge geschützt (nicht 99xxx): {entry_id}")
+    e = find_entry(db, entry_id)
+    if e is None:
+        die(EXIT_DB, f"Eintrag nicht gefunden: {entry_id}")
+    db["result"]["list"].remove(e)
+    count_autofix(db)
+
+
+def bump_version(db, version=9876543210):
+    db["result"]["version"] = version
+
+
+def count_autofix(db):
+    db["result"]["count"] = len(db["result"]["list"])
+
+
 def main():
     check_dependencies()
     parser = argparse.ArgumentParser(prog="cfs.py", description="Creality K2 Custom Filament CLI")
