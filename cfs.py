@@ -480,15 +480,61 @@ def orcacheck(config, values):
     return simulate_match(presets, values["name"], values["brand"], values["type"])
 
 
+def _save_cache_meta(db):
+    meta = {
+        "pull_time": time.time(),
+        "version": db["result"]["version"],
+        "count": db["result"]["count"],
+    }
+    LOCAL_CACHE_META.write_text(json.dumps(meta))
+
+
+def _cache_valid():
+    if not LOCAL_CACHE.exists() or not LOCAL_CACHE_META.exists():
+        return False
+    try:
+        meta = json.loads(LOCAL_CACHE_META.read_text())
+        return (time.time() - meta["pull_time"]) < CACHE_TTL_SECONDS
+    except (json.JSONDecodeError, KeyError):
+        return False
+
+
+def _get_cached_db(config):
+    if _cache_valid():
+        return load_db(str(LOCAL_CACHE))
+    # refresh
+    scp_pull(config, str(LOCAL_CACHE))
+    db = load_db(str(LOCAL_CACHE))
+    _save_cache_meta(db)
+    return db
+
+
+def cmd_add(config, args):
+    print("add: not implemented yet (Task 11)")
+
+
+def cmd_edit(config, args):
+    print("edit: not implemented yet (Task 12)")
+
+
+def cmd_delete(config, args):
+    print("delete: not implemented yet (Task 12)")
+
+
 def main():
     check_dependencies()
     parser = argparse.ArgumentParser(prog="cfs.py", description="Creality K2 Custom Filament CLI")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("pull", help="DB via SCP lokal holen")
-    sub.add_parser("push", help="Lokale DB via SCP hochladen")
-    sub.add_parser("list", help="Custom-Einträge anzeigen").add_argument("--all", action="store_true")
-    sub.add_parser("verify", help="WS-Check").add_argument("--id")
-    sub.add_parser("weblookup", help="HTTP-Lookup").add_argument("brand").add_argument("name")
+    push_p = sub.add_parser("push", help="Lokale DB via SCP hochladen")
+    push_p.add_argument("--no-version", action="store_true", help="Skip version bump (dangerous)")
+    list_p = sub.add_parser("list", help="Custom-Einträge anzeigen")
+    list_p.add_argument("--all", action="store_true")
+    verify_p = sub.add_parser("verify", help="WS-Check")
+    verify_p.add_argument("--id")
+    web_p = sub.add_parser("weblookup", help="HTTP-Lookup")
+    web_p.add_argument("brand")
+    web_p.add_argument("name")
     orca = sub.add_parser("orcacheck", help="OrcaSlicer-Diagnose")
     orca.add_argument("id")
     add_p = sub.add_parser("add", help="Neuen Eintrag")
@@ -510,8 +556,90 @@ def main():
     del_p.add_argument("--confirm")
     del_p.add_argument("--yes", action="store_true")
     del_p.add_argument("--config")
+    # global --config for pull/push/list/verify/orcacheck/weblookup
+    for name in ("pull", "push", "list", "verify", "orcacheck", "weblookup"):
+        sub.choices[name].add_argument("--config", default=None)
     args = parser.parse_args()
-    print(f"Command: {args.command} (skeleton — not implemented yet)")
+    # weblookup needs no config; load lazily for others
+    config = None
+
+    if args.command == "pull":
+        config = load_config(args.config) if getattr(args, "config", None) else load_config()
+        scp_pull(config, str(LOCAL_CACHE))
+        db = load_db(str(LOCAL_CACHE))
+        _save_cache_meta(db)
+        print(f"DB gepullt: {db['result']['count']} Einträge, version {db['result']['version']}")
+
+    elif args.command == "push":
+        config = load_config(args.config) if getattr(args, "config", None) else load_config()
+        if not LOCAL_CACHE.exists():
+            die(EXIT_DB, f"Lokaler Cache nicht gefunden: {LOCAL_CACHE}. Erst 'pull' ausführen.")
+        db = load_db(str(LOCAL_CACHE))
+        if not getattr(args, "no_version", False):
+            bump_version(db, config["version_override"])
+            save_db(str(LOCAL_CACHE), db)
+        scp_push(config, str(LOCAL_CACHE))
+        print(f"DB gepusht: {db['result']['count']} Einträge, version {db['result']['version']}")
+
+    elif args.command == "list":
+        config = load_config(args.config) if getattr(args, "config", None) else load_config()
+        db = _get_cached_db(config)
+        entries = db["result"]["list"] if args.all else find_custom_entries(db)
+        if not entries:
+            print("Keine Custom-Einträge." if not args.all else "DB leer.")
+        else:
+            print(f"{'ID':<8} {'Brand':<15} {'Name':<25} {'Type':<8} {'minT':<6} {'maxT':<6}")
+            print("-" * 70)
+            for e in entries:
+                b = e["base"]
+                print(f"{b['id']:<8} {b['brand']:<15} {b['name']:<25} {b['meterialType']:<8} {b['minTemp']:<6} {b['maxTemp']:<6}")
+
+    elif args.command == "verify":
+        config = load_config(args.config) if getattr(args, "config", None) else load_config()
+        db = _get_cached_db(config)
+        materials = req_materials(config)
+        print(f"Version (lokal): {db['result']['version']}")
+        if args.id:
+            found = verify_entry(materials, args.id)
+            print(f"Eintrag {args.id}: {'gefunden' if found else 'FEHLT'}")
+            if not found:
+                die(EXIT_WS, f"Eintrag {args.id} nicht in Drucker-DB")
+        else:
+            customs = find_custom_entries(db)
+            print(f"Custom-Einträge lokal: {len(customs)}")
+            for e in customs:
+                b = e["base"]
+                found = verify_entry(materials, b["id"])
+                print(f"  {b['id']:<8} {b['name']:<25} {'OK' if found else 'FEHLT'}")
+
+    elif args.command == "weblookup":
+        result = lookup_filament(args.brand, args.name)
+        print(json.dumps(result, indent=2))
+
+    elif args.command == "orcacheck":
+        config = load_config(args.config) if getattr(args, "config", None) else load_config()
+        db = _get_cached_db(config)
+        e = find_entry(db, args.id)
+        if e is None:
+            die(EXIT_DB, f"Eintrag nicht gefunden: {args.id}")
+        values = {
+            "brand": e["base"]["brand"],
+            "name": e["base"]["name"],
+            "type": e["base"]["meterialType"],
+        }
+        result = orcacheck(config, values)
+        print(json.dumps(result, indent=2))
+
+    elif args.command == "add":
+        config = load_config(args.config) if getattr(args, "config", None) else load_config()
+        cmd_add(config, args)
+    elif args.command == "edit":
+        config = load_config(args.config) if getattr(args, "config", None) else load_config()
+        cmd_edit(config, args)
+    elif args.command == "delete":
+        config = load_config(args.config) if getattr(args, "config", None) else load_config()
+        cmd_delete(config, args)
+
     sys.exit(EXIT_OK)
 
 
