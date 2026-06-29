@@ -58,3 +58,10 @@ def test_find_entry_by_id(mock_db):
 
 def test_find_entry_not_found(mock_db):
     assert cfs.find_entry(mock_db, "99999") is None
+
+
+def test_load_db_missing(tmp_path):
+    p = tmp_path / "nonexistent.json"
+    with pytest.raises(SystemExit) as exc:
+        cfs.load_db(str(p))
+    assert exc.value.code == cfs.EXIT_DB
