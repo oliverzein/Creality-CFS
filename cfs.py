@@ -241,6 +241,96 @@ def validate_entry(values):
     return errors, warnings
 
 
+# === SSH/SCP Section ===
+
+def _ssh_base_cmd(config):
+    return [
+        "sshpass", "-p", config["ssh_password"],
+        "ssh", "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "ConnectTimeout=10",
+        f"{config['ssh_user']}@{config['printer_ip']}",
+    ]
+
+
+def ssh_cmd(config, cmd, timeout=30):
+    full = _ssh_base_cmd(config) + [cmd]
+    try:
+        result = subprocess.run(full, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        die(EXIT_SSH, f"SSH timeout ({timeout}s): {cmd}")
+    if result.returncode == 255 and "Permission denied" in result.stderr:
+        die(EXIT_SSH, "SSH-Auth fehlgeschlagen. Config prüfen.")
+    if result.returncode != 0 and result.returncode != 255:
+        die(EXIT_SSH, f"SSH Fehler (rc={result.returncode}): {result.stderr}")
+    return result
+
+
+def scp_pull(config, local_path):
+    remote = f"{config['ssh_user']}@{config['printer_ip']}:{config['db_remote_path']}"
+    cmd = ["sshpass", "-p", config["ssh_password"], "scp",
+           "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+           remote, local_path]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        die(EXIT_SSH, "SCP pull timeout")
+    if result.returncode != 0:
+        die(EXIT_SSH, f"SCP pull fehlgeschlagen: {result.stderr}")
+
+
+def scp_push(config, local_path):
+    remote = f"{config['ssh_user']}@{config['printer_ip']}:{config['db_remote_path']}"
+    cmd = ["sshpass", "-p", config["ssh_password"], "scp",
+           "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+           local_path, remote]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        die(EXIT_SSH, "SCP push timeout")
+    if result.returncode != 0:
+        die(EXIT_SSH, f"SCP push fehlgeschlagen: {result.stderr}")
+
+
+def wait_for_reboot(config, timeout=300):
+    deadline = time.time() + timeout
+    time.sleep(10)  # initial boot wait
+    while time.time() < deadline:
+        try:
+            result = subprocess.run(
+                _ssh_base_cmd(config) + ["echo ok"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0 and "ok" in result.stdout:
+                time.sleep(5)  # services settle
+                return True
+        except subprocess.TimeoutExpired:
+            pass
+        time.sleep(5)
+    return False
+
+
+def ssh_backup(config):
+    remote_path = config["db_remote_path"]
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    backup_path = f"{remote_path}.bak.{ts}"
+    ssh_cmd(config, f"cp {remote_path} {backup_path}")
+    # rotate: keep last 5
+    ssh_cmd(config,
+            f"ls -t {remote_path}.bak.* 2>/dev/null | tail -n +6 | xargs -r rm")
+
+
+def ssh_reboot(config):
+    # fire and forget — connection will close
+    try:
+        subprocess.run(
+            _ssh_base_cmd(config) + ["reboot"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.TimeoutExpired, Exception):
+        pass  # expected — connection drops
+
+
 def main():
     check_dependencies()
     parser = argparse.ArgumentParser(prog="cfs.py", description="Creality K2 Custom Filament CLI")
