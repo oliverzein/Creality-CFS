@@ -49,3 +49,11 @@ def test_create_config_from_template_with_overrides(tmp_path):
     target = tmp_path / "out.json"
     cfg = cfs.create_config_from_template(str(target), overrides={"printer_ip": "10.0.0.5"})
     assert cfg["printer_ip"] == "10.0.0.5"
+
+
+def test_load_config_invalid_json(tmp_path):
+    cfg_path = tmp_path / "bad.json"
+    cfg_path.write_text("{not valid json")
+    with pytest.raises(SystemExit) as exc:
+        cfs.load_config(str(cfg_path))
+    assert exc.value.code == cfs.EXIT_CONFIG
