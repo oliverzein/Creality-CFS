@@ -158,6 +158,46 @@ def count_autofix(db):
     db["result"]["count"] = len(db["result"]["list"])
 
 
+# === Validation Section ===
+
+KNOWN_TYPES = {"PLA", "PETG", "ABS", "TPU", "PA", "PC", "ASA", "PVA", "HIPS", "PETG-CF", "PLA-CF"}
+REQUIRED_FIELDS = ["brand", "name", "type", "minTemp", "maxTemp"]
+
+
+def validate_entry(values):
+    errors = []
+    warnings = []
+    for f in REQUIRED_FIELDS:
+        if f not in values or values[f] in (None, "", []):
+            errors.append(f"Pflichtfeld fehlt: {f}")
+    if errors:
+        return errors, warnings
+    min_t = values["minTemp"]
+    max_t = values["maxTemp"]
+    if not (isinstance(min_t, (int, float)) and isinstance(max_t, (int, float))):
+        errors.append("minTemp/maxTemp müssen numerisch sein")
+        return errors, warnings
+    if min_t >= max_t:
+        errors.append(f"minTemp ({min_t}) muss < maxTemp ({max_t}) sein")
+    if not (100 <= min_t <= 400) or not (100 <= max_t <= 400):
+        errors.append(f"Temp außerhalb 100-400°C (min={min_t}, max={max_t})")
+    density = values.get("density")
+    if density is not None and not (0.9 <= density <= 1.6):
+        errors.append(f"density außerhalb 0.9-1.6: {density}")
+    drying_temp = values.get("dryingTemp")
+    if drying_temp is not None and not (0 <= drying_temp <= 100):
+        errors.append(f"dryingTemp außerhalb 0-100°C: {drying_temp}")
+    drying_time = values.get("dryingTime")
+    if drying_time is not None and not (0 <= drying_time <= 24):
+        errors.append(f"dryingTime außerhalb 0-24h: {drying_time}")
+    # warnings
+    if values["brand"].lower() not in values["name"].lower():
+        warnings.append(f"name '{values['name']}' enthält nicht Vendor '{values['brand']}' — OrcaSlicer-Tie-Risko")
+    if values["type"] not in KNOWN_TYPES:
+        warnings.append(f"Unbekannter type '{values['type']}' — OrcaSlicer-Match könnte failen")
+    return errors, warnings
+
+
 def main():
     check_dependencies()
     parser = argparse.ArgumentParser(prog="cfs.py", description="Creality K2 Custom Filament CLI")
