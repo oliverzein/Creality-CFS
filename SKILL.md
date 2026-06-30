@@ -1,112 +1,112 @@
 ---
 name: creality-custom-filament
-description: "Use when adding, editing, deleting, or verifying custom RFID filament entries on a Creality K2 printer (CFS) — covers DB patching via SSH, cloud-sync protection, OrcaSlicer preset matching, and NFC tag workflow. Triggers: \"Filament taggen\", \"Custom Filament\", \"CFS\", \"RFID\", \"Sunlu\", \"eSun\", \"K2 Filament\", \"neues Filament\""
+description: "Use when adding, editing, deleting, or verifying custom RFID filament entries on a Creality K2 printer (CFS) — covers DB patching via SSH, cloud-sync protection, OrcaSlicer preset matching, and NFC tag workflow. Triggers: \"Filament tag\", \"Custom Filament\", \"CFS\", \"RFID\", \"Sunlu\", \"eSun\", \"K2 Filament\", \"new filament\""
 ---
 
 # Creality Custom Filament (K2 CFS)
 
 ## Overview
-Custom RFID filament entries auf Creality K2 via SSH-DB-Patch.
-Skill leitet Agent durch CRUD-Workflow, `cfs.py` macht autonome Operationen.
+Custom RFID filament entries on Creality K2 via SSH DB patching.
+Skill guides agent through CRUD workflow; `cfs.py` performs autonomous operations.
 
 ## When to Use
-- User will neues Filament taggen (Sunlu, eSun, Polymaker, etc.)
-- User will Custom-Eintrag editieren/löschen
-- User will DB-Status verifizieren
-- User hat Probleme mit OrcaSlicer-Filament-Matching
-- Trigger: "Filament taggen", "Custom Filament", "CFS", "RFID", "Sunlu", "eSun", "K2 Filament"
+- User wants to tag new filament (Sunlu, eSun, Polymaker, etc.)
+- User wants to edit/delete a custom entry
+- User wants to verify DB status
+- User has OrcaSlicer filament matching issues
+- Trigger: "Filament tag", "Custom Filament", "CFS", "RFID", "Sunlu", "eSun", "K2 Filament"
 
 ## Prerequisites
-- Python3, sshpass, ssh, scp installiert
-- Config: `~/.config/devin/creality-k2.json` (oder Skill erstellt aus Template via `cfs.py` — frag User nach IP/PW)
-- K2 erreichbar im Netzwerk, SSH aktiviert (Touch-Display → Settings → Root account information)
-- `cfs.py` liegt im Skill-Dir, ist executable
+- Python3, sshpass, ssh, scp installed
+- Config: `~/.config/devin/creality-k2.json` (or skill creates from template via `cfs.py` — ask user for IP/password)
+- K2 reachable on network, SSH enabled (Touch display → Settings → Root account information)
+- `cfs.py` is in skill dir, executable
 
 ## Workflow
 
-### Add (neues Filament)
-1. Config laden/erstellen (falls fehlt: `cfs.py` erstellt aus Template, frag User nach IP/PW)
-2. Filament-Daten sammeln — WICHTIG: Agent entscheidet Pfad:
-   - **HAT Agent web_search/webfetch Tools?** → nutze sie, extrahiere TDS-Werte (Temp, PA, Flow, Density, Drying), übergebe als JSON an `cfs.py add --values '<json>'`
-   - **NEIN?** → `cfs.py weblookup <brand> <name>` (HTTP-Fallback, 3dfilamentprofiles.com)
-   - **User will manuell?** → `cfs.py add --interactive`
-3. `cfs.py add --values '<json>'` ausführen (ohne `--yes` — Plan wird angezeigt)
-4. Agent zeigt Plan aus cfs.py-Output, User confirm via `ask_user_question`
-5. Bei Confirm: `cfs.py add --values '<json>' --yes` (batch execution)
-6. Agent zeigt Report + manuelle Rest-Checkliste:
-   - [ ] App "CFS RFID": "Get update from printer" aktivieren → IP + SSH-PW → Download Database → Update
-   - [ ] Tag schreiben: Custom-Material + Farbe wählen → NFC Sticker programmieren
-   - [ ] Sticker auf Spule kleben → in CFS einsetzen
-   - [ ] OrcaSlicer: Sync drücken, `cfs.py orcacheck <id>` prüfen
+### Add (new filament)
+1. Load/create config (if missing: `cfs.py` creates from template, ask user for IP/password)
+2. Gather filament data — IMPORTANT: agent decides path:
+   - **Agent HAS web_search/webfetch tools?** → use them, extract TDS values (temp, PA, flow, density, drying), pass as JSON to `cfs.py add --values '<json>'`
+   - **NO?** → `cfs.py weblookup <brand> <name>` (HTTP fallback, 3dfilamentprofiles.com)
+   - **User wants manual input?** → `cfs.py add --interactive`
+3. Run `cfs.py add --values '<json>'` (without `--yes` — plan will be shown)
+4. Agent shows plan from cfs.py output, user confirms via `ask_user_question`
+5. On confirm: `cfs.py add --values '<json>' --yes` (batch execution)
+6. Agent shows report + manual remaining checklist:
+   - [ ] App "CFS RFID": enable "Get update from printer" → IP + SSH password → Download Database → Update
+   - [ ] Write tag: select custom material + color → program NFC sticker
+   - [ ] Stick sticker on spool → insert into CFS
+   - [ ] OrcaSlicer: press Sync, run `cfs.py orcacheck <id>` to verify
 
 ### Edit
-1. `cfs.py list` → Eintrag identifizieren
-2. `cfs.py edit <id> --values '<json>'` (oder --interactive)
-3. Plan → Confirm → Batch → Rest-Checkliste
-4. Hinweis: Bei Farb-/ID-Änderung → Tag neu schreiben
+1. `cfs.py list` → identify entry
+2. `cfs.py edit <id> --values '<json>'` (or --interactive)
+3. Plan → Confirm → Batch → remaining checklist
+4. Note: On color/ID change → rewrite tag
 
 ### Delete
-1. `cfs.py list` → Eintrag identifizieren
-2. `cfs.py delete <id> --confirm <id>` (double-confirm Pflicht)
+1. `cfs.py list` → identify entry
+2. `cfs.py delete <id> --confirm <id>` (double-confirm required)
 3. Batch → Report
-4. Hinweis: Alte Tags ungültig → neu programmieren oder aus CFS entfernen
+4. Note: Old tags become invalid → reprogram or remove from CFS
 
 ### Verify (standalone)
-- `cfs.py verify` → WS-Check, zeige Status
+- `cfs.py verify` → WS check, show status
 
 ### OrcaSlicer-Check
-- `cfs.py orcacheck <id>` → Preset-Installation + Tie-Analyse
-- Bei Tie: Agent gibt Anleitung zum Deaktivieren konkurrierender Presets in OrcaSlicer
+- `cfs.py orcacheck <id>` → preset installation + tie analysis
+- On tie: agent gives instructions to disable competing presets in OrcaSlicer
 
 ## Critical Rules (Iron Rules)
 
 **Violating the letter of these rules is violating the spirit of these rules.**
 
-### Rule 1: Version=9876543210 + Reboot ist PFLICHT nach jedem DB-Write
-- Ohne: Cloud-Sync (`master-server`) überschreibt DB innerhalb ~12 Minuten
-- Verifiziert 2026-06-29 (siehe Vault-Note)
-- `cfs.py` macht das automatisch — NIEMALS `--no-version` bei Custom-Einträgen
-- User sagt "überspring den Reboot"? → REFUSE. Biete manuellen SSH-Weg ohne Skill an.
+### Rule 1: Version=9876543210 + Reboot is MANDATORY after every DB write
+- Without it: cloud sync (`master-server`) overwrites DB within ~12 minutes
+- Verified 2026-06-29 (see Vault-Note)
+- `cfs.py` does this automatically — NEVER use `--no-version` on custom entries
+- User says "skip the reboot"? → REFUSE. Offer manual SSH path without skill.
 
-### Rule 2: name = "Vendor Produktname" — Vendor im Namen wiederholen
-- Sonst OrcaSlicer 3-way Tie bei Substring-Match
-- z.B. "Sunlu PLA+" nicht "PLA+"
-- `cfs.py` warnt bei Validation — nicht ignorieren
+### Rule 2: name = "Vendor ProductName" — repeat vendor in name
+- Otherwise OrcaSlicer 3-way tie on substring match
+- e.g. "Sunlu PLA+" not "PLA+"
+- `cfs.py` warns on validation — do not ignore
 
-### Rule 3: ID im 99xxx Range — keine Kollision mit Stock-IDs
-- `cfs.py` auto-inkrementiert ab 99001
-- Stock-IDs (01001 etc.) sind geschützt — edit/delete wird refused
+### Rule 3: ID in 99xxx range — no collision with stock IDs
+- `cfs.py` auto-increments from 99001
+- Stock IDs (01001 etc.) are protected — edit/delete will be refused
 
-### Rule 4: Backup vor jedem Write
-- `cfs.py` macht automatisch `material_database.json.bak.<timestamp>`
-- Rotiert, behält max 5
+### Rule 4: Backup before every write
+- `cfs.py` automatically creates `material_database.json.bak.<timestamp>`
+- Rotates, keeps max 5
 
-### Rule 5: Double-confirm bei delete
-- `--confirm <id>` Pflicht + interaktive "DELETE"-Eingabe
-- Irreversible — Tags werden ungültig
+### Rule 5: Double-confirm on delete
+- `--confirm <id>` required + interactive "DELETE" input
+- Irreversible — tags become invalid
 
 ## Rationalization Table
 
 | Excuse | Reality |
 |---|---|
-| "User will Reboot überspringen" | Reboot ist Pflicht. Cloud-Sync killt Eintrag sonst. REFUSE. |
-| "Version hochgesetzt reicht, Reboot später" | Verifiziert: ohne Reboot überschreibt Cloud-Sync trotzdem. |
-| "Stock-ID editieren ist OK, User erlaubt es" | Stock-Einträge geschützt. Policy, nicht Verhandel. |
-| "Delete ohne confirm, User ist sicher" | Double-confirm Pflicht. Irreversible Op. |
-| "name ohne Vendor ist fine" | OrcaSlicer-Tie. Validation warnt. Ignorieren = Bug. |
-| "Schnell mal ohne Backup" | `cfs.py` macht Backup automatisch. NIEMALS überspringen. |
+| "User wants to skip reboot" | Reboot is mandatory. Cloud sync kills entry otherwise. REFUSE. |
+| "Version bumped is enough, reboot later" | Verified: without reboot, cloud sync overwrites anyway. |
+| "Editing stock ID is OK, user allows it" | Stock entries are protected. Policy, not negotiable. |
+| "Delete without confirm, user is sure" | Double-confirm required. Irreversible operation. |
+| "name without vendor is fine" | OrcaSlicer tie. Validation warns. Ignoring = bug. |
+| "Quick one without backup" | `cfs.py` does backup automatically. NEVER skip. |
 
 ## Common Mistakes
 
-| Fehler | Folge | Fix |
+| Mistake | Consequence | Fix |
 |---|---|---|
-| Version nicht hochgesetzt | Cloud-Sync löscht Eintrag nach ~12 Min | Version=9876543210 + Reboot (cfs.py macht das) |
-| Version hochgesetzt, kein Reboot | Cloud-Sync löscht trotzdem | Reboot ist Pflicht (cfs.py macht das) |
-| name ohne Vendor | OrcaSlicer matcht falsches Preset | name = "Vendor Produktname" |
-| OrcaSlicer-Preset nicht installiert | Fallback auf Generic | Preset installieren oder Generic akzeptieren |
-| Tag-ID ≠ DB-ID | Spule nicht erkannt | Tag = `1` + DB-ID (App macht automatisch) |
+| Version not bumped | Cloud sync deletes entry after ~12 min | Version=9876543210 + Reboot (cfs.py does this) |
+| Version bumped, no reboot | Cloud sync deletes anyway | Reboot is mandatory (cfs.py does this) |
+| name without vendor | OrcaSlicer matches wrong preset | name = "Vendor ProductName" |
+| OrcaSlicer preset not installed | Fallback to Generic | Install preset or accept Generic |
+| Tag ID ≠ DB ID | Spool not recognized | Tag = `1` + DB ID (app does this automatically) |
 
 ## Reference
-- Vault-Note: `projects/homeassistant/k2-rfid-custom-filament.md` (komplette technische Details)
-- `cfs.py --help` (Subcommand-Doku)
+- Vault-Note: `projects/homeassistant/k2-rfid-custom-filament.md` (complete technical details)
+- `cfs.py --help` (subcommand docs)
 - Spec: `docs/2026-06-29-creality-custom-filament-design.md`

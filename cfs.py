@@ -43,7 +43,7 @@ def die(code, msg):
 def load_config(path=None):
     cfg_path = Path(path) if path else DEFAULT_CONFIG_PATH
     if not cfg_path.exists():
-        die(EXIT_CONFIG, f"Config nicht gefunden: {cfg_path}. Erstelle aus Template: cp {TEMPLATE_CONFIG_PATH} {cfg_path}")
+        die(EXIT_CONFIG, f"Config not found: {cfg_path}. Create from template: cp {TEMPLATE_CONFIG_PATH} {cfg_path}")
     try:
         with open(cfg_path) as f:
             cfg = json.load(f)
@@ -52,7 +52,7 @@ def load_config(path=None):
     required = ["printer_ip", "ssh_user", "ssh_password", "db_remote_path", "ws_port", "version_override", "id_range_start"]
     missing = [k for k in required if k not in cfg]
     if missing:
-        die(EXIT_CONFIG, f"Config fehlt Felder: {missing}")
+        die(EXIT_CONFIG, f"Config missing fields: {missing}")
     cfg.setdefault("orcaslicer_config_dir", "~/.config/OrcaSlicer")
     return cfg
 
@@ -73,12 +73,12 @@ def check_dependencies():
     required = ["sshpass", "ssh", "scp"]
     missing = [cmd for cmd in required if not shutil.which(cmd)]
     if missing:
-        die(EXIT_CONFIG, f"Fehlende System-Tools: {missing}. Bitte installieren.")
+        die(EXIT_CONFIG, f"Missing system tools: {missing}. Please install.")
     for pkg in ("requests", "bs4", "websocket"):
         try:
             __import__(pkg)
         except ImportError:
-            die(EXIT_CONFIG, f"Python-Paket '{pkg}' fehlt: pip install requests beautifulsoup4 websocket-client")
+            die(EXIT_CONFIG, f"Python package '{pkg}' missing: pip install requests beautifulsoup4 websocket-client")
 
 
 # === DB Section ===
@@ -86,12 +86,12 @@ def check_dependencies():
 def load_db(path):
     p = Path(path)
     if not p.exists():
-        die(EXIT_DB, f"DB-Datei nicht gefunden: {p}")
+        die(EXIT_DB, f"DB file not found: {p}")
     try:
         with open(p) as f:
             return json.load(f)
     except json.JSONDecodeError as e:
-        die(EXIT_DB, f"DB nicht parsebar: {e}. Backup wiederherstellen.")
+        die(EXIT_DB, f"DB not parseable: {e}. Restore from backup.")
 
 
 def save_db(path, db):
@@ -127,17 +127,17 @@ def _is_custom_id(entry_id):
 def insert_entry(db, entry):
     entry_id = entry["base"]["id"]
     if find_entry(db, entry_id) is not None:
-        die(EXIT_DB, f"ID-Kollision: {entry_id} existiert bereits")
+        die(EXIT_DB, f"ID collision: {entry_id} already exists")
     db["result"]["list"].append(entry)
     count_autofix(db)
 
 
 def patch_entry(db, entry_id, changes):
     if not _is_custom_id(entry_id):
-        die(EXIT_DB, f"Stock-Einträge geschützt (nicht 99xxx): {entry_id}")
+        die(EXIT_DB, f"Stock entries protected (not 99xxx): {entry_id}")
     e = find_entry(db, entry_id)
     if e is None:
-        die(EXIT_DB, f"Eintrag nicht gefunden: {entry_id}")
+        die(EXIT_DB, f"Entry not found: {entry_id}")
     for section, fields in changes.items():
         if section not in e:
             e[section] = {}
@@ -147,10 +147,10 @@ def patch_entry(db, entry_id, changes):
 
 def remove_entry(db, entry_id):
     if not _is_custom_id(entry_id):
-        die(EXIT_DB, f"Stock-Einträge geschützt (nicht 99xxx): {entry_id}")
+        die(EXIT_DB, f"Stock entries protected (not 99xxx): {entry_id}")
     e = find_entry(db, entry_id)
     if e is None:
-        die(EXIT_DB, f"Eintrag nicht gefunden: {entry_id}")
+        die(EXIT_DB, f"Entry not found: {entry_id}")
     db["result"]["list"].remove(e)
     count_autofix(db)
 
@@ -173,7 +173,7 @@ def build_entry(db, values):
         template = next((e for e in db["result"]["list"]
                          if e.get("base", {}).get("meterialType") == "PLA"), None)
         if template is None:
-            die(EXIT_DB, f"Template-Eintrag {TEMPLATE_ID} fehlt und kein PLA-Fallback gefunden")
+            die(EXIT_DB, f"Template entry {TEMPLATE_ID} missing and no PLA fallback found")
     entry = _copy.deepcopy(template)
     b = entry["base"]
     b["id"] = str(values["id"])
@@ -216,32 +216,32 @@ def validate_entry(values):
     warnings = []
     for f in REQUIRED_FIELDS:
         if f not in values or values[f] in (None, "", []):
-            errors.append(f"Pflichtfeld fehlt: {f}")
+            errors.append(f"Required field missing: {f}")
     if errors:
         return errors, warnings
     min_t = values["minTemp"]
     max_t = values["maxTemp"]
     if not (isinstance(min_t, (int, float)) and isinstance(max_t, (int, float))):
-        errors.append("minTemp/maxTemp müssen numerisch sein")
+        errors.append("minTemp/maxTemp must be numeric")
         return errors, warnings
     if min_t >= max_t:
-        errors.append(f"minTemp ({min_t}) muss < maxTemp ({max_t}) sein")
+        errors.append(f"minTemp ({min_t}) must be < maxTemp ({max_t})")
     if not (100 <= min_t <= 400) or not (100 <= max_t <= 400):
-        errors.append(f"Temp außerhalb 100-400°C (min={min_t}, max={max_t})")
+        errors.append(f"Temp outside 100-400°C (min={min_t}, max={max_t})")
     density = values.get("density")
     if density is not None and not (0.9 <= density <= 1.6):
-        errors.append(f"density außerhalb 0.9-1.6: {density}")
+        errors.append(f"density outside 0.9-1.6: {density}")
     drying_temp = values.get("dryingTemp")
     if drying_temp is not None and not (0 <= drying_temp <= 100):
-        errors.append(f"dryingTemp außerhalb 0-100°C: {drying_temp}")
+        errors.append(f"dryingTemp outside 0-100°C: {drying_temp}")
     drying_time = values.get("dryingTime")
     if drying_time is not None and not (0 <= drying_time <= 24):
-        errors.append(f"dryingTime außerhalb 0-24h: {drying_time}")
+        errors.append(f"dryingTime outside 0-24h: {drying_time}")
     # warnings
     if values["brand"].lower() not in values["name"].lower():
-        warnings.append(f"name '{values['name']}' enthält nicht Vendor '{values['brand']}' — OrcaSlicer-Tie-Risko")
+        warnings.append(f"name '{values['name']}' does not contain vendor '{values['brand']}' — OrcaSlicer tie risk")
     if values["type"] not in KNOWN_TYPES:
-        warnings.append(f"Unbekannter type '{values['type']}' — OrcaSlicer-Match könnte failen")
+        warnings.append(f"Unknown type '{values['type']}' — OrcaSlicer match may fail")
     return errors, warnings
 
 
@@ -264,9 +264,9 @@ def ssh_cmd(config, cmd, timeout=30):
     except subprocess.TimeoutExpired:
         die(EXIT_SSH, f"SSH timeout ({timeout}s): {cmd}")
     if result.returncode == 255 and "Permission denied" in result.stderr:
-        die(EXIT_SSH, "SSH-Auth fehlgeschlagen. Config prüfen.")
+        die(EXIT_SSH, "SSH auth failed. Check config.")
     if result.returncode != 0 and result.returncode != 255:
-        die(EXIT_SSH, f"SSH Fehler (rc={result.returncode}): {result.stderr}")
+        die(EXIT_SSH, f"SSH error (rc={result.returncode}): {result.stderr}")
     return result
 
 
@@ -280,7 +280,7 @@ def scp_pull(config, local_path):
     except subprocess.TimeoutExpired:
         die(EXIT_SSH, "SCP pull timeout")
     if result.returncode != 0:
-        die(EXIT_SSH, f"SCP pull fehlgeschlagen: {result.stderr}")
+        die(EXIT_SSH, f"SCP pull failed: {result.stderr}")
 
 
 def scp_push(config, local_path):
@@ -293,7 +293,7 @@ def scp_push(config, local_path):
     except subprocess.TimeoutExpired:
         die(EXIT_SSH, "SCP push timeout")
     if result.returncode != 0:
-        die(EXIT_SSH, f"SCP push fehlgeschlagen: {result.stderr}")
+        die(EXIT_SSH, f"SCP push failed: {result.stderr}")
 
 
 def wait_for_reboot(config, timeout=300):
@@ -346,11 +346,11 @@ def ws_request(config, method, params):
         raw = ws.recv()
         ws.close()
     except Exception as e:
-        die(EXIT_WS, f"WS-Verbindung fehlgeschlagen ({uri}): {e}")
+        die(EXIT_WS, f"WS connection failed ({uri}): {e}")
     try:
         return json.loads(raw)
     except json.JSONDecodeError as e:
-        die(EXIT_WS, f"WS-Response nicht parsebar: {e}")
+        die(EXIT_WS, f"WS response not parseable: {e}")
 
 
 def req_materials(config):
@@ -360,7 +360,7 @@ def req_materials(config):
         return resp["retMaterials"]
     if isinstance(resp, dict) and "result" in resp and "list" in resp["result"]:
         return resp["result"]["list"]
-    die(EXIT_WS, f"WS-Response unerwartet: {resp}")
+    die(EXIT_WS, f"WS response unexpected: {resp}")
 
 
 def verify_entry(materials, entry_id):
@@ -382,13 +382,13 @@ def lookup_filament(brand, name):
     try:
         resp = requests.get(url, timeout=15, headers={"User-Agent": "cfs.py/1.0"})
     except Exception as e:
-        die(EXIT_WEBLOOKUP, f"Web-Lookup fehlgeschlagen ({url}): {e}")
+        die(EXIT_WEBLOOKUP, f"Web lookup failed ({url}): {e}")
     if resp.status_code != 200:
-        die(EXIT_WEBLOOKUP, f"Profil nicht gefunden (HTTP {resp.status_code}): {url}")
+        die(EXIT_WEBLOOKUP, f"Profile not found (HTTP {resp.status_code}): {url}")
     soup = BeautifulSoup(resp.text, "html.parser")
     profile = soup.find(class_="filament-profile")
     if profile is None:
-        die(EXIT_WEBLOOKUP, f"Parse fehlgeschlagen — kein Profil-Container auf {url}")
+        die(EXIT_WEBLOOKUP, f"Parse failed — no profile container on {url}")
     try:
         def txt(cls):
             el = profile.find(class_=cls)
@@ -421,7 +421,7 @@ def lookup_filament(brand, name):
             result["dryingTime"] = int(dry_time)
         return result
     except (ValueError, AttributeError) as e:
-        die(EXIT_WEBLOOKUP, f"Parse fehlgeschlagen: {e}")
+        die(EXIT_WEBLOOKUP, f"Parse failed: {e}")
 
 
 # === OrcaSlicer Section ===
@@ -463,9 +463,9 @@ def simulate_match(presets, brand_name, vendor, filament_type):
         return {"matches": [], "ties": [], "fallback": "Generic"}
     top = matches[0]["score"]
     ties = [m for m in matches if m["score"] == top and top > 0]
-    recommendation = "Eindeutiger Match"
+    recommendation = "Unique match"
     if len(ties) > 1:
-        recommendation = f"Tie! Deaktiviere in OrcaSlicer: {', '.join(m['preset'] for m in ties[1:])}"
+        recommendation = f"Tie! Disable in OrcaSlicer: {', '.join(m['preset'] for m in ties[1:])}"
     return {"matches": matches, "ties": ties, "recommendation": recommendation}
 
 
@@ -473,10 +473,10 @@ def orcacheck(config, values):
     config_dir = config.get("orcaslicer_config_dir", "~/.config/OrcaSlicer")
     expanded = os.path.expanduser(config_dir)
     if not Path(expanded).exists():
-        return {"warning": f"OrcaSlicer-Dir nicht gefunden: {expanded}. orcacheck übersprungen."}
+        return {"warning": f"OrcaSlicer dir not found: {expanded}. orcacheck skipped."}
     presets = find_presets(config_dir, values["brand"], values["type"])
     if not presets:
-        return {"warning": f"Kein Preset für {values['brand']}/{values['type']} installiert. OrcaSlicer fällt auf Generic zurück."}
+        return {"warning": f"No preset for {values['brand']}/{values['type']} installed. OrcaSlicer will fall back to Generic."}
     return simulate_match(presets, values["name"], values["brand"], values["type"])
 
 
@@ -518,23 +518,23 @@ def cmd_add(config, args):
             die(EXIT_VALIDATE, f"--values JSON parse error: {e}")
     elif args.auto_lookup:
         if not args.brand or not args.name:
-            die(EXIT_VALIDATE, "--auto-lookup erfordert --brand und --name")
+            die(EXIT_VALIDATE, "--auto-lookup requires --brand and --name")
         values = lookup_filament(args.brand, args.name)
-        print(f"Web-Lookup Ergebnis:\n{json.dumps(values, indent=2)}")
+        print(f"Web lookup result:\n{json.dumps(values, indent=2)}")
     elif args.interactive:
         values = _interactive_collect()
     else:
-        die(EXIT_VALIDATE, "Werte nötig: --values JSON, --auto-lookup, oder --interactive")
+        die(EXIT_VALIDATE, "Values required: --values JSON, --auto-lookup, or --interactive")
 
     # 2. Validate
     errors, warnings = validate_entry(values)
     if errors:
-        print("Validierungsfehler:")
+        print("Validation errors:")
         for e in errors:
             print(f"  - {e}")
-        die(EXIT_VALIDATE, "Validierung fehlgeschlagen")
+        die(EXIT_VALIDATE, "Validation failed")
     if warnings:
-        print("Warnungen:")
+        print("Warnings:")
         for w in warnings:
             print(f"  - {w}")
 
@@ -544,10 +544,10 @@ def cmd_add(config, args):
     # 4. OrcaSlicer check (safety: always prompt on tie, even with --yes)
     orca_result = orcacheck(config, values)
     if "ties" in orca_result and len(orca_result.get("ties", [])) >= 1:
-        print(f"OrcaSlicer-Warnung: {orca_result['recommendation']}")
-        resp = input("Trotzdem fortfahren? (y/n): ")
+        print(f"OrcaSlicer warning: {orca_result['recommendation']}")
+        resp = input("Proceed anyway? (y/n): ")
         if resp.lower() != "y":
-            die(EXIT_ABORT, "Abgebrochen durch Benutzer")
+            die(EXIT_ABORT, "Aborted by user")
 
     # 5. Assign ID
     entry_id = next_free_id(db, config["id_range_start"])
@@ -557,27 +557,27 @@ def cmd_add(config, args):
     entry = build_entry(db, values)
 
     # 7. Show plan + confirm
-    print(f"\nNeuer Eintrag:")
+    print(f"\nNew entry:")
     print(f"  ID:     {entry_id}")
     print(f"  Brand:  {values['brand']}")
     print(f"  Name:   {values['name']}")
     print(f"  Type:   {values['type']}")
     print(f"  Temp:   {values['minTemp']}-{values['maxTemp']}°C")
     if not args.yes:
-        resp = input("Eintrag hinzufügen? (y/n): ")
+        resp = input("Add entry? (y/n): ")
         if resp.lower() != "y":
-            die(EXIT_ABORT, "Abgebrochen durch Benutzer")
+            die(EXIT_ABORT, "Aborted by user")
 
     # 8. Insert + save
     insert_entry(db, entry)
     save_db(str(LOCAL_CACHE), db)
-    print(f"Eintrag {entry_id} hinzugefügt (lokal). 'push' zum Hochladen.")
+    print(f"Entry {entry_id} added (local). Run 'push' to upload.")
     return str(entry_id)
 
 
 def _interactive_collect():
     """Interactive prompt for filament values."""
-    print("Interaktive Eingabe (leer = Default/optional):")
+    print("Interactive input (empty = default/optional):")
     values = {}
     values["brand"] = input("Brand: ").strip()
     values["name"] = input("Name: ").strip()
@@ -615,7 +615,7 @@ def cmd_edit(config, args):
     elif args.interactive:
         changes = _interactive_edit(config, args.id)
     else:
-        die(EXIT_VALIDATE, "Änderungen nötig: --values JSON oder --interactive")
+        die(EXIT_VALIDATE, "Changes required: --values JSON or --interactive")
 
     # 2. Load DB
     db = _get_cached_db(config)
@@ -623,21 +623,21 @@ def cmd_edit(config, args):
     # 3. Find entry (check exists before patch)
     e = find_entry(db, args.id)
     if e is None:
-        die(EXIT_DB, f"Eintrag nicht gefunden: {args.id}")
+        die(EXIT_DB, f"Entry not found: {args.id}")
 
     # 4. Show before/after plan
-    print(f"Edit Eintrag {args.id}:")
-    print(f"  Vorher: {e['base']['name']} ({e['base']['brand']})")
-    print(f"  Änderungen: {json.dumps(changes, indent=2)}")
+    print(f"Edit entry {args.id}:")
+    print(f"  Before: {e['base']['name']} ({e['base']['brand']})")
+    print(f"  Changes: {json.dumps(changes, indent=2)}")
     if not args.yes:
-        resp = input("Änderung anwenden? (y/n): ")
+        resp = input("Apply changes? (y/n): ")
         if resp.lower() != "y":
-            die(EXIT_ABORT, "Abgebrochen durch Benutzer")
+            die(EXIT_ABORT, "Aborted by user")
 
     # 5. Patch (patch_entry checks stock ID protection)
     patch_entry(db, args.id, changes)
     save_db(str(LOCAL_CACHE), db)
-    print(f"Eintrag {args.id} geändert (lokal). 'push' zum Hochladen.")
+    print(f"Entry {args.id} updated (local). Run 'push' to upload.")
 
 
 def _interactive_edit(config, entry_id):
@@ -645,10 +645,10 @@ def _interactive_edit(config, entry_id):
     db = _get_cached_db(config)
     e = find_entry(db, entry_id)
     if e is None:
-        die(EXIT_DB, f"Eintrag nicht gefunden: {entry_id}")
+        die(EXIT_DB, f"Entry not found: {entry_id}")
     b = e["base"]
     print(f"Edit {entry_id} — {b['name']} ({b['brand']})")
-    print("Leer = unverändert.")
+    print("Empty = unchanged.")
     changes = {}
     base_changes = {}
     name = input(f"Name [{b['name']}]: ").strip()
@@ -678,41 +678,41 @@ def cmd_delete(config, args):
     # 2. Find entry
     e = find_entry(db, args.id)
     if e is None:
-        die(EXIT_DB, f"Eintrag nicht gefunden: {args.id}")
+        die(EXIT_DB, f"Entry not found: {args.id}")
 
     # 3. Confirm
     if args.confirm:
         if args.confirm != args.id:
-            die(EXIT_ABORT, f"--confirm muss ID '{args.id}' entsprechen, got '{args.confirm}'")
+            die(EXIT_ABORT, f"--confirm must match ID '{args.id}', got '{args.confirm}'")
     elif not args.yes:
-        print(f"Lösche Eintrag {args.id}: {e['base']['name']} ({e['base']['brand']})")
-        resp = input("Wirklich löschen? (y/n): ")
+        print(f"Delete entry {args.id}: {e['base']['name']} ({e['base']['brand']})")
+        resp = input("Really delete? (y/n): ")
         if resp.lower() != "y":
-            die(EXIT_ABORT, "Abgebrochen durch Benutzer")
+            die(EXIT_ABORT, "Aborted by user")
 
     # 4. Remove (remove_entry checks stock ID protection)
     remove_entry(db, args.id)
     save_db(str(LOCAL_CACHE), db)
-    print(f"Eintrag {args.id} gelöscht (lokal). 'push' zum Hochladen.")
+    print(f"Entry {args.id} deleted (local). Run 'push' to upload.")
 
 
 def main():
     check_dependencies()
     parser = argparse.ArgumentParser(prog="cfs.py", description="Creality K2 Custom Filament CLI")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("pull", help="DB via SCP lokal holen")
-    push_p = sub.add_parser("push", help="Lokale DB via SCP hochladen")
+    sub.add_parser("pull", help="Fetch DB via SCP")
+    push_p = sub.add_parser("push", help="Upload local DB via SCP")
     push_p.add_argument("--no-version", action="store_true", help="Skip version bump (dangerous)")
-    list_p = sub.add_parser("list", help="Custom-Einträge anzeigen")
+    list_p = sub.add_parser("list", help="Show custom entries")
     list_p.add_argument("--all", action="store_true")
-    verify_p = sub.add_parser("verify", help="WS-Check")
+    verify_p = sub.add_parser("verify", help="WS check")
     verify_p.add_argument("--id")
-    web_p = sub.add_parser("weblookup", help="HTTP-Lookup")
+    web_p = sub.add_parser("weblookup", help="HTTP lookup")
     web_p.add_argument("brand")
     web_p.add_argument("name")
-    orca = sub.add_parser("orcacheck", help="OrcaSlicer-Diagnose")
+    orca = sub.add_parser("orcacheck", help="OrcaSlicer diagnostics")
     orca.add_argument("id")
-    add_p = sub.add_parser("add", help="Neuen Eintrag")
+    add_p = sub.add_parser("add", help="Add new entry")
     add_p.add_argument("--values")
     add_p.add_argument("--brand")
     add_p.add_argument("--name")
@@ -720,13 +720,13 @@ def main():
     add_p.add_argument("--interactive", action="store_true")
     add_p.add_argument("--yes", action="store_true")
     add_p.add_argument("--config")
-    edit_p = sub.add_parser("edit", help="Eintrag ändern")
+    edit_p = sub.add_parser("edit", help="Edit entry")
     edit_p.add_argument("id")
     edit_p.add_argument("--values")
     edit_p.add_argument("--interactive", action="store_true")
     edit_p.add_argument("--yes", action="store_true")
     edit_p.add_argument("--config")
-    del_p = sub.add_parser("delete", help="Eintrag löschen")
+    del_p = sub.add_parser("delete", help="Delete entry")
     del_p.add_argument("id")
     del_p.add_argument("--confirm")
     del_p.add_argument("--yes", action="store_true")
@@ -743,25 +743,25 @@ def main():
         scp_pull(config, str(LOCAL_CACHE))
         db = load_db(str(LOCAL_CACHE))
         _save_cache_meta(db)
-        print(f"DB gepullt: {db['result']['count']} Einträge, version {db['result']['version']}")
+        print(f"DB pulled: {db['result']['count']} entries, version {db['result']['version']}")
 
     elif args.command == "push":
         config = load_config(args.config) if getattr(args, "config", None) else load_config()
         if not LOCAL_CACHE.exists():
-            die(EXIT_DB, f"Lokaler Cache nicht gefunden: {LOCAL_CACHE}. Erst 'pull' ausführen.")
+            die(EXIT_DB, f"Local cache not found: {LOCAL_CACHE}. Run 'pull' first.")
         db = load_db(str(LOCAL_CACHE))
         if not getattr(args, "no_version", False):
             bump_version(db, config["version_override"])
             save_db(str(LOCAL_CACHE), db)
         scp_push(config, str(LOCAL_CACHE))
-        print(f"DB gepusht: {db['result']['count']} Einträge, version {db['result']['version']}")
+        print(f"DB pushed: {db['result']['count']} entries, version {db['result']['version']}")
 
     elif args.command == "list":
         config = load_config(args.config) if getattr(args, "config", None) else load_config()
         db = _get_cached_db(config)
         entries = db["result"]["list"] if args.all else find_custom_entries(db)
         if not entries:
-            print("Keine Custom-Einträge." if not args.all else "DB leer.")
+            print("No custom entries." if not args.all else "DB empty.")
         else:
             print(f"{'ID':<8} {'Brand':<15} {'Name':<25} {'Type':<8} {'minT':<6} {'maxT':<6}")
             print("-" * 70)
@@ -773,19 +773,19 @@ def main():
         config = load_config(args.config) if getattr(args, "config", None) else load_config()
         db = _get_cached_db(config)
         materials = req_materials(config)
-        print(f"Version (lokal): {db['result']['version']}")
+        print(f"Version (local): {db['result']['version']}")
         if args.id:
             found = verify_entry(materials, args.id)
-            print(f"Eintrag {args.id}: {'gefunden' if found else 'FEHLT'}")
+            print(f"Entry {args.id}: {'found' if found else 'MISSING'}")
             if not found:
-                die(EXIT_WS, f"Eintrag {args.id} nicht in Drucker-DB")
+                die(EXIT_WS, f"Entry {args.id} not in printer DB")
         else:
             customs = find_custom_entries(db)
-            print(f"Custom-Einträge lokal: {len(customs)}")
+            print(f"Custom entries (local): {len(customs)}")
             for e in customs:
                 b = e["base"]
                 found = verify_entry(materials, b["id"])
-                print(f"  {b['id']:<8} {b['name']:<25} {'OK' if found else 'FEHLT'}")
+                print(f"  {b['id']:<8} {b['name']:<25} {'OK' if found else 'MISSING'}")
 
     elif args.command == "weblookup":
         result = lookup_filament(args.brand, args.name)
@@ -796,7 +796,7 @@ def main():
         db = _get_cached_db(config)
         e = find_entry(db, args.id)
         if e is None:
-            die(EXIT_DB, f"Eintrag nicht gefunden: {args.id}")
+            die(EXIT_DB, f"Entry not found: {args.id}")
         values = {
             "brand": e["base"]["brand"],
             "name": e["base"]["name"],

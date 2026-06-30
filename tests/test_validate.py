@@ -41,7 +41,7 @@ def test_validate_name_without_vendor_warning():
     values = {"brand": "Sunlu", "name": "PLA+", "type": "PLA", "minTemp": 205, "maxTemp": 215}
     errors, warnings = cfs.validate_entry(values)
     assert errors == []
-    assert any("Vendor" in w or "Tie" in w for w in warnings)
+    assert any("vendor" in w.lower() or "tie" in w.lower() for w in warnings)
 
 
 def test_validate_unknown_type_warning():
