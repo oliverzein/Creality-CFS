@@ -42,7 +42,7 @@ pip install requests beautifulsoup4 websocket-client
 
 - Creality K2 on your network
 - SSH enabled (Touch display → Settings → Root account information)
-- Root password set (default: `your_password`)
+- Root password set on the printer (Settings → Root account information)
 
 ## Installation
 
