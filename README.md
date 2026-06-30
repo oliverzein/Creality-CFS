@@ -56,7 +56,7 @@ git clone <repo> ~/Dokumente/Daten/Development/skills/Creality-custom-filament
 ### 2. Register the skill with Devin
 
 ```bash
-ln -s ~/Dokumente/Daten/Development/skills/Creality-custom-filament \
+ln -s ~/Dokumente/Daten/Development/skills/Creality-custom-filament/skill \
       ~/.config/devin/skills/Creality-custom-filament
 ```
 
@@ -70,7 +70,7 @@ ls -la ~/.config/devin/skills/Creality-custom-filament/SKILL.md
 
 ```bash
 mkdir -p ~/.config/devin
-cp ~/Dokumente/Daten/Development/skills/Creality-custom-filament/config.example.json \
+cp ~/Dokumente/Daten/Development/skills/Creality-custom-filament/skill/config.example.json \
    ~/.config/devin/creality-k2.json
 ```
 
@@ -92,14 +92,14 @@ Edit `~/.config/devin/creality-k2.json` with your printer's IP and SSH password:
 ### 4. Make cfs.py executable
 
 ```bash
-chmod +x ~/Dokumente/Daten/Development/skills/Creality-custom-filament/cfs.py
+chmod +x ~/Dokumente/Daten/Development/skills/Creality-custom-filament/skill/cfs.py
 ```
 
 ### 5. Verify installation
 
 ```bash
 cd ~/Dokumente/Daten/Development/skills/Creality-custom-filament
-./cfs.py --help
+./skill/cfs.py --help
 ```
 
 You should see all 9 subcommands listed.
@@ -131,20 +131,20 @@ All commands can be run directly from the terminal.
 #### Pull the database from the printer
 
 ```bash
-./cfs.py pull
+./skill/cfs.py pull
 ```
 
 #### List custom entries
 
 ```bash
-./cfs.py list          # custom entries only (99xxx)
-./cfs.py list --all    # all entries including stock
+./skill/cfs.py list          # custom entries only (99xxx)
+./skill/cfs.py list --all    # all entries including stock
 ```
 
 #### Add a new filament
 
 ```bash
-./cfs.py add --values '{"brand":"eSUN","name":"eSUN PETG Basic","type":"PETG","minTemp":240,"maxTemp":260,"density":1.27,"dryingTemp":60,"dryingTime":8,"color":"#808080","pa":0.045,"flowRatio":0.95,"maxVolumetric":12}'
+./skill/cfs.py add --values '{"brand":"eSUN","name":"eSUN PETG Basic","type":"PETG","minTemp":240,"maxTemp":260,"density":1.27,"dryingTemp":60,"dryingTime":8,"color":"#808080","pa":0.045,"flowRatio":0.95,"maxVolumetric":12}'
 ```
 
 This shows a plan and prompts for confirmation. Add `--yes` to skip the prompt.
@@ -152,25 +152,25 @@ This shows a plan and prompts for confirmation. Add `--yes` to skip the prompt.
 Interactive mode:
 
 ```bash
-./cfs.py add --interactive
+./skill/cfs.py add --interactive
 ```
 
 Auto-lookup from 3dfilamentprofiles.com:
 
 ```bash
-./cfs.py add --brand eSUN --name "PETG Basic" --auto-lookup
+./skill/cfs.py add --brand eSUN --name "PETG Basic" --auto-lookup
 ```
 
 #### Edit an entry
 
 ```bash
-./cfs.py edit 99002 --values '{"base":{"minTemp":235}}'
+./skill/cfs.py edit 99002 --values '{"base":{"minTemp":235}}'
 ```
 
 #### Delete an entry
 
 ```bash
-./cfs.py delete 99002 --confirm 99002
+./skill/cfs.py delete 99002 --confirm 99002
 ```
 
 `--confirm` must match the entry ID (double-confirm for irreversible operations).
@@ -178,7 +178,7 @@ Auto-lookup from 3dfilamentprofiles.com:
 #### Push to printer
 
 ```bash
-./cfs.py push
+./skill/cfs.py push
 ```
 
 This bumps the version to `9876543210` and uploads the database. **You must reboot the printer after pushing** — the skill does this automatically when used via Devin, but via CLI you need to do it manually:
@@ -192,8 +192,8 @@ Wait 2-3 minutes for the printer to come back online.
 #### Verify after reboot
 
 ```bash
-./cfs.py verify
-./cfs.py verify --id 99002
+./skill/cfs.py verify
+./skill/cfs.py verify --id 99002
 ```
 
 Pulls the database from the printer and checks:
@@ -203,7 +203,7 @@ Pulls the database from the printer and checks:
 #### OrcaSlicer diagnostics
 
 ```bash
-./cfs.py orcacheck 99002
+./skill/cfs.py orcacheck 99002
 ```
 
 Checks if OrcaSlicer has a matching preset installed and detects tie conflicts (multiple presets matching with the same score).
@@ -211,7 +211,7 @@ Checks if OrcaSlicer has a matching preset installed and detects tie conflicts (
 #### Web lookup (standalone)
 
 ```bash
-./cfs.py weblookup eSUN "PETG Basic"
+./skill/cfs.py weblookup eSUN "PETG Basic"
 ```
 
 Returns filament data as JSON. Used as a fallback when the agent has no web search tools.
@@ -258,10 +258,11 @@ These rules are enforced by the skill and must never be violated:
 
 ```
 Creality-custom-filament/
-├── SKILL.md                    # Agent instructions (workflow + iron rules)
-├── cfs.py                      # CLI tool (executable)
-├── config.example.json         # Config template
-├── README.md                   # This file
+├── skill/
+│   ├── SKILL.md                    # Agent instructions (workflow + iron rules)
+│   ├── cfs.py                      # CLI tool (executable)
+│   └── config.example.json         # Config template
+├── README.md                       # This file
 ├── .gitignore
 ├── docs/
 │   ├── 2026-06-29-creality-custom-filament-design.md   # Design spec

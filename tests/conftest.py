@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-SKILL_DIR = Path(__file__).parent.parent
+SKILL_DIR = Path(__file__).parent.parent / "skill"
 sys.path.insert(0, str(SKILL_DIR))
 
 

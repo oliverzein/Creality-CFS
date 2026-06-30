@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-CFS = str(Path(__file__).parent.parent / "cfs.py")
+CFS = str(Path(__file__).parent.parent / "skill" / "cfs.py")
 
 
 def _run(args, env=None):
