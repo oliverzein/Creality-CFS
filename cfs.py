@@ -156,7 +156,7 @@ def remove_entry(db, entry_id):
 
 
 def bump_version(db, version=9876543210):
-    db["result"]["version"] = version
+    db["result"]["version"] = str(version)
 
 
 def count_autofix(db):
@@ -369,7 +369,7 @@ def verify_entry(materials, entry_id):
 
 def verify_version(db, expected):
     actual = db.get("result", {}).get("version") if isinstance(db, dict) else None
-    return actual == expected
+    return str(actual) == str(expected)
 
 
 # === Web-Lookup Section ===
@@ -705,7 +705,7 @@ def main():
     push_p.add_argument("--no-version", action="store_true", help="Skip version bump (dangerous)")
     list_p = sub.add_parser("list", help="Show custom entries")
     list_p.add_argument("--all", action="store_true")
-    verify_p = sub.add_parser("verify", help="WS check")
+    verify_p = sub.add_parser("verify", help="Pull DB from printer and check entries/version")
     verify_p.add_argument("--id")
     web_p = sub.add_parser("weblookup", help="HTTP lookup")
     web_p.add_argument("brand")
@@ -771,17 +771,26 @@ def main():
 
     elif args.command == "verify":
         config = load_config(args.config) if getattr(args, "config", None) else load_config()
-        db = _get_cached_db(config)
-        materials = req_materials(config)
-        print(f"Version (local): {db['result']['version']}")
+        # Force fresh pull from printer (ignore cache TTL)
+        scp_pull(config, str(LOCAL_CACHE))
+        db = load_db(str(LOCAL_CACHE))
+        _save_cache_meta(db)
+        expected_version = config["version_override"]
+        actual_version = db["result"]["version"]
+        version_ok = str(actual_version) == str(expected_version)
+        print(f"Version (printer): {actual_version}")
+        print(f"Version expected:  {expected_version} — {'OK' if version_ok else 'MISMATCH'}")
+        if not version_ok:
+            print("WARNING: Version mismatch — cloud sync may have overwritten the DB.")
+        materials = db["result"]["list"]
         if args.id:
             found = verify_entry(materials, args.id)
             print(f"Entry {args.id}: {'found' if found else 'MISSING'}")
             if not found:
-                die(EXIT_WS, f"Entry {args.id} not in printer DB")
+                die(EXIT_DB, f"Entry {args.id} not in printer DB")
         else:
             customs = find_custom_entries(db)
-            print(f"Custom entries (local): {len(customs)}")
+            print(f"Custom entries: {len(customs)}")
             for e in customs:
                 b = e["base"]
                 found = verify_entry(materials, b["id"])

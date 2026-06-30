@@ -52,7 +52,7 @@ Skill guides agent through CRUD workflow; `cfs.py` performs autonomous operation
 4. Note: Old tags become invalid → reprogram or remove from CFS
 
 ### Verify (standalone)
-- `cfs.py verify` → WS check, show status
+- `cfs.py verify` → pulls DB from printer, checks version + entry status
 
 ### OrcaSlicer-Check
 - `cfs.py orcacheck <id>` → preset installation + tie analysis

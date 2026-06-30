@@ -121,7 +121,7 @@ def test_remove_entry_nonexistent(mock_db):
 
 def test_bump_version(mock_db):
     cfs.bump_version(mock_db, 9876543210)
-    assert mock_db["result"]["version"] == 9876543210
+    assert mock_db["result"]["version"] == "9876543210"
 
 
 def test_count_autofix(mock_db):
