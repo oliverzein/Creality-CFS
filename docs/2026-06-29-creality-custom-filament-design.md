@@ -315,7 +315,29 @@ Skill liegt in `/home/oliverzein/Dokumente/Daten/Development/skills/Creality-cus
 Falls DevIn Skills aus diesem Dir lädt: kein symlink nötig.
 Falls nicht: symlink nach `~/.config/devin/skills/Creality-custom-filament`.
 
+## Decision: No Sync Command (2026-07-01)
+
+**Verdict:** OrcaSlicer→DB sync (`cfs.py sync`) not built. Benefit too narrow, cost too high.
+
+### What sync would have fixed
+DB temp fields (`nozzle_temperature`, `nozzle_temperature_range_high`, `filament_max_volumetric_speed`) diverging from Orca profile after re-tuning. These DB fields are ONLY used for:
+1. Filament-change heating (multi-color PAUSE/RESUME) — printer heats to DB temp, not Gcode temp
+2. Flush calc (multi-color purge volume)
+3. Safety min-temp check
+
+### What sync can't fix
+`dryingTemp/Time` — Orca has no schema for these, stay manual forever.
+
+### Key fact
+DB temps are NOT used for actual printing. Print temp = Gcode (M104/M109). Single-color prints: DB temps invisible. Sync's entire benefit = multi-color change/flush temps aligned with Orca tuning. Narrow.
+
+### Cost
+Mapping problem (no link between Orca profile `filament_id` and DB `base.id` 99xxx), diff detection, persistent state, more failure modes + tests.
+
+### Alternative if pain emerges
+`cfs.py edit <id> --from-orca <path>` — one-shot pull from Orca profile into existing edit flow. No mapping state, no scan. Revisit only if multi-color workflow reveals real divergence pain.
+
 ## Reference
 
-- Vault-Note: `projects/homeassistant/k2-rfid-custom-filament.md` (komplette technische Details)
+- Vault-Note: `projects/homeassistant/k2-rfid-custom-filament.md` (komplette technische Details + sync decision)
 - cfs.py --help (Subcommand-Doku)
