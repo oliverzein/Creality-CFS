@@ -25,8 +25,9 @@ EXIT_VALIDATE = 4
 EXIT_WS = 5
 EXIT_REBOOT = 6
 EXIT_WEBLOOKUP = 7
-EXIT_ORCA = 8
+EXIT_ORCA = 8  # reserved, currently unused — OrcaSlicer issues are downgraded to warnings (see orcacheck())
 EXIT_ABORT = 9
+EXIT_BUSY = 10
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "devin" / "creality-k2.json"
 TEMPLATE_CONFIG_PATH = Path(__file__).parent / "config.example.json"
@@ -353,16 +354,6 @@ def ws_request(config, method, params):
         die(EXIT_WS, f"WS response not parseable: {e}")
 
 
-def req_materials(config):
-    resp = ws_request(config, "get", {"reqMaterials": 1})
-    # Response shape: {"retMaterials": [...]} or nested
-    if isinstance(resp, dict) and "retMaterials" in resp:
-        return resp["retMaterials"]
-    if isinstance(resp, dict) and "result" in resp and "list" in resp["result"]:
-        return resp["result"]["list"]
-    die(EXIT_WS, f"WS response unexpected: {resp}")
-
-
 def verify_entry(materials, entry_id):
     return any(m.get("base", {}).get("id") == entry_id for m in materials)
 
@@ -370,6 +361,35 @@ def verify_entry(materials, entry_id):
 def verify_version(db, expected):
     actual = db.get("result", {}).get("version") if isinstance(db, dict) else None
     return str(actual) == str(expected)
+
+
+def get_printer_status(config):
+    """Query printer status via WS. Returns full status dict."""
+    return ws_request(config, "get", {})
+
+
+def check_printer_busy(config):
+    """Check if printer is currently printing.
+
+    Returns (busy: bool, info: dict) where info contains:
+      - state: printer state int (0=idle, 1=printing, 2=paused, etc.)
+      - printFileName: current print file (empty if idle)
+      - printProgress: 0-100
+      - layer: current layer
+      - totalLayer: total layers
+
+    Busy = printProgress > 0 OR non-empty printFileName.
+    """
+    status = get_printer_status(config)
+    info = {
+        "state": status.get("state", 0),
+        "printFileName": status.get("printFileName", ""),
+        "printProgress": status.get("printProgress", 0),
+        "layer": status.get("layer", 0),
+        "totalLayer": status.get("TotalLayer", 0),
+    }
+    busy = info["printProgress"] > 0 or bool(info["printFileName"])
+    return busy, info
 
 
 # === Web-Lookup Section ===
@@ -541,13 +561,19 @@ def cmd_add(config, args):
     # 3. Load DB
     db = _get_cached_db(config)
 
-    # 4. OrcaSlicer check (safety: always prompt on tie, even with --yes)
+    # 4. OrcaSlicer check
+    plan_only = getattr(args, "plan_only", False)
     orca_result = orcacheck(config, values)
     if "ties" in orca_result and len(orca_result.get("ties", [])) >= 1:
         print(f"OrcaSlicer warning: {orca_result['recommendation']}")
-        resp = input("Proceed anyway? (y/n): ")
-        if resp.lower() != "y":
-            die(EXIT_ABORT, "Aborted by user")
+        if plan_only:
+            pass  # plan-only never applies changes — nothing to confirm yet
+        elif args.yes:
+            print("Proceeding despite tie (--yes).")
+        else:
+            resp = input("Proceed anyway? (y/n): ")
+            if resp.lower() != "y":
+                die(EXIT_ABORT, "Aborted by user")
 
     # 5. Assign ID
     entry_id = next_free_id(db, config["id_range_start"])
@@ -563,6 +589,9 @@ def cmd_add(config, args):
     print(f"  Name:   {values['name']}")
     print(f"  Type:   {values['type']}")
     print(f"  Temp:   {values['minTemp']}-{values['maxTemp']}°C")
+    if plan_only:
+        print("\nDry run — no changes made. Re-run with --yes to apply.")
+        return None
     if not args.yes:
         resp = input("Add entry? (y/n): ")
         if resp.lower() != "y":
@@ -629,6 +658,9 @@ def cmd_edit(config, args):
     print(f"Edit entry {args.id}:")
     print(f"  Before: {e['base']['name']} ({e['base']['brand']})")
     print(f"  Changes: {json.dumps(changes, indent=2)}")
+    if getattr(args, "plan_only", False):
+        print("\nDry run — no changes made. Re-run with --yes to apply.")
+        return
     if not args.yes:
         resp = input("Apply changes? (y/n): ")
         if resp.lower() != "y":
@@ -671,6 +703,81 @@ def _interactive_edit(config, entry_id):
     return changes
 
 
+def cmd_push(config, args):
+    """Push local DB to printer: busy check, version bump, SCP upload, reboot."""
+    if not LOCAL_CACHE.exists():
+        die(EXIT_DB, f"Local cache not found: {LOCAL_CACHE}. Run 'pull' first.")
+    db = load_db(str(LOCAL_CACHE))
+
+    # Busy check BEFORE upload — no point uploading if we can't reboot to protect it
+    if not getattr(args, "no_reboot", False):
+        busy, info = check_printer_busy(config)
+        if busy and not getattr(args, "force_reboot", False):
+            fname = info["printFileName"] or "(unknown)"
+            if "/" in fname:
+                fname = fname.rsplit("/", 1)[-1]
+            print(f"PRINTER BUSY — cannot push safely (reboot would kill active print).")
+            print(f"  File:     {fname}")
+            print(f"  Progress: {info['printProgress']}%")
+            print(f"  Layer:    {info['layer']}/{info['totalLayer']}")
+            print(f"  State:    {info['state']}")
+            print(f"")
+            print(f"Options:")
+            print(f"  1. Wait for print to finish, then re-run 'cfs.py push'")
+            print(f"  2. Use --force-reboot to push + reboot anyway (KILLS the active print)")
+            print(f"  3. Use --no-reboot to push without reboot (cloud sync may overwrite — reboot manually later)")
+            die(EXIT_BUSY, "Printer is busy — push refused for safety")
+
+    # Version bump + upload
+    if not getattr(args, "no_version", False):
+        bump_version(db, config["version_override"])
+        save_db(str(LOCAL_CACHE), db)
+    scp_push(config, str(LOCAL_CACHE))
+    print(f"DB pushed: {db['result']['count']} entries, version {db['result']['version']}")
+
+    if getattr(args, "no_reboot", False):
+        print("WARNING: --no-reboot set. Cloud sync may overwrite the DB within ~12 minutes.")
+        print("Reboot manually: sshpass -p '<password>' ssh root@<ip> 'reboot'")
+        return
+
+    # Reboot + wait
+    print("Rebooting printer...")
+    ssh_reboot(config)
+    print("Waiting for printer to come back online...")
+    if not wait_for_reboot(config):
+        die(EXIT_REBOOT, "Printer did not come back online within 300s. Reboot manually and run 'verify'.")
+    print("Printer back online.")
+    print(f"DB push complete: {db['result']['count']} entries, version {db['result']['version']}")
+    print("Run 'cfs.py verify' to confirm entries survived cloud sync.")
+
+
+def cmd_verify(config, args):
+    """Pull DB fresh from printer (ignoring cache TTL) and check version/entries."""
+    scp_pull(config, str(LOCAL_CACHE))
+    db = load_db(str(LOCAL_CACHE))
+    _save_cache_meta(db)
+    expected_version = config["version_override"]
+    actual_version = db["result"]["version"]
+    version_ok = verify_version(db, expected_version)
+    print(f"Version (printer): {actual_version}")
+    print(f"Version expected:  {expected_version} — {'OK' if version_ok else 'MISMATCH'}")
+    if not version_ok:
+        print("WARNING: Version mismatch — cloud sync may have overwritten the DB.")
+    materials = db["result"]["list"]
+    if getattr(args, "id", None):
+        found = verify_entry(materials, args.id)
+        print(f"Entry {args.id}: {'found' if found else 'MISSING'}")
+        if not found:
+            die(EXIT_DB, f"Entry {args.id} not in printer DB")
+    else:
+        customs = find_custom_entries(db)
+        print(f"Custom entries: {len(customs)}")
+        for e in customs:
+            b = e["base"]
+            found = verify_entry(materials, b["id"])
+            print(f"  {b['id']:<8} {b['name']:<25} {'OK' if found else 'MISSING'}")
+
+
 def cmd_delete(config, args):
     # 1. Load DB
     db = _get_cached_db(config)
@@ -681,6 +788,10 @@ def cmd_delete(config, args):
         die(EXIT_DB, f"Entry not found: {args.id}")
 
     # 3. Confirm
+    if getattr(args, "plan_only", False):
+        print(f"Would delete entry {args.id}: {e['base']['name']} ({e['base']['brand']})")
+        print("Dry run — no changes made. Re-run with --confirm <id> or --yes to apply.")
+        return
     if args.confirm:
         if args.confirm != args.id:
             die(EXIT_ABORT, f"--confirm must match ID '{args.id}', got '{args.confirm}'")
@@ -701,8 +812,10 @@ def main():
     parser = argparse.ArgumentParser(prog="cfs.py", description="Creality K2 Custom Filament CLI")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("pull", help="Fetch DB via SCP")
-    push_p = sub.add_parser("push", help="Upload local DB via SCP")
+    push_p = sub.add_parser("push", help="Upload local DB via SCP, bump version, reboot")
     push_p.add_argument("--no-version", action="store_true", help="Skip version bump (dangerous)")
+    push_p.add_argument("--no-reboot", action="store_true", help="Skip reboot (dangerous — cloud sync will overwrite)")
+    push_p.add_argument("--force-reboot", action="store_true", help="Reboot even if printer is busy (kills active print)")
     list_p = sub.add_parser("list", help="Show custom entries")
     list_p.add_argument("--all", action="store_true")
     verify_p = sub.add_parser("verify", help="Pull DB from printer and check entries/version")
@@ -719,17 +832,23 @@ def main():
     add_p.add_argument("--auto-lookup", action="store_true")
     add_p.add_argument("--interactive", action="store_true")
     add_p.add_argument("--yes", action="store_true")
+    add_p.add_argument("--plan-only", action="store_true", dest="plan_only",
+                        help="Show the plan and exit without prompting or making changes (safe for non-interactive use)")
     add_p.add_argument("--config")
     edit_p = sub.add_parser("edit", help="Edit entry")
     edit_p.add_argument("id")
     edit_p.add_argument("--values")
     edit_p.add_argument("--interactive", action="store_true")
     edit_p.add_argument("--yes", action="store_true")
+    edit_p.add_argument("--plan-only", action="store_true", dest="plan_only",
+                         help="Show the plan and exit without prompting or making changes (safe for non-interactive use)")
     edit_p.add_argument("--config")
     del_p = sub.add_parser("delete", help="Delete entry")
     del_p.add_argument("id")
     del_p.add_argument("--confirm")
     del_p.add_argument("--yes", action="store_true")
+    del_p.add_argument("--plan-only", action="store_true", dest="plan_only",
+                        help="Show the plan and exit without prompting or making changes (safe for non-interactive use)")
     del_p.add_argument("--config")
     # global --config for pull/push/list/verify/orcacheck/weblookup
     for name in ("pull", "push", "list", "verify", "orcacheck", "weblookup"):
@@ -747,14 +866,7 @@ def main():
 
     elif args.command == "push":
         config = load_config(args.config) if getattr(args, "config", None) else load_config()
-        if not LOCAL_CACHE.exists():
-            die(EXIT_DB, f"Local cache not found: {LOCAL_CACHE}. Run 'pull' first.")
-        db = load_db(str(LOCAL_CACHE))
-        if not getattr(args, "no_version", False):
-            bump_version(db, config["version_override"])
-            save_db(str(LOCAL_CACHE), db)
-        scp_push(config, str(LOCAL_CACHE))
-        print(f"DB pushed: {db['result']['count']} entries, version {db['result']['version']}")
+        cmd_push(config, args)
 
     elif args.command == "list":
         config = load_config(args.config) if getattr(args, "config", None) else load_config()
@@ -771,30 +883,7 @@ def main():
 
     elif args.command == "verify":
         config = load_config(args.config) if getattr(args, "config", None) else load_config()
-        # Force fresh pull from printer (ignore cache TTL)
-        scp_pull(config, str(LOCAL_CACHE))
-        db = load_db(str(LOCAL_CACHE))
-        _save_cache_meta(db)
-        expected_version = config["version_override"]
-        actual_version = db["result"]["version"]
-        version_ok = str(actual_version) == str(expected_version)
-        print(f"Version (printer): {actual_version}")
-        print(f"Version expected:  {expected_version} — {'OK' if version_ok else 'MISMATCH'}")
-        if not version_ok:
-            print("WARNING: Version mismatch — cloud sync may have overwritten the DB.")
-        materials = db["result"]["list"]
-        if args.id:
-            found = verify_entry(materials, args.id)
-            print(f"Entry {args.id}: {'found' if found else 'MISSING'}")
-            if not found:
-                die(EXIT_DB, f"Entry {args.id} not in printer DB")
-        else:
-            customs = find_custom_entries(db)
-            print(f"Custom entries: {len(customs)}")
-            for e in customs:
-                b = e["base"]
-                found = verify_entry(materials, b["id"])
-                print(f"  {b['id']:<8} {b['name']:<25} {'OK' if found else 'MISSING'}")
+        cmd_verify(config, args)
 
     elif args.command == "weblookup":
         result = lookup_filament(args.brand, args.name)

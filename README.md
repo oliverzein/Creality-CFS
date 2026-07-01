@@ -147,9 +147,16 @@ All commands can be run directly from the terminal.
 ./skill/cfs.py add --values '{"brand":"eSUN","name":"eSUN PETG Basic","type":"PETG","minTemp":240,"maxTemp":260,"density":1.27,"dryingTemp":60,"dryingTime":8,"color":"#808080","pa":0.045,"flowRatio":0.95,"maxVolumetric":12}'
 ```
 
-This shows a plan and prompts for confirmation. Add `--yes` to skip the prompt.
+This shows a plan and prompts for confirmation on the terminal. Add `--yes` to skip the prompt, or `--plan-only` to just print the plan and exit 0 without asking anything or changing anything.
 
-Interactive mode:
+**Non-interactive use (scripts, agents):** always pass `--plan-only` (to preview) or `--yes` (to apply). Running without either flag will block on a `y/n` prompt and crash with an unhandled `EOFError` if there's no stdin attached — it is not a safe default for automation.
+
+```bash
+./skill/cfs.py add --values '{...}' --plan-only   # preview only, no changes
+./skill/cfs.py add --values '{...}' --yes         # apply, no prompt
+```
+
+Interactive mode (prompts for each field one at a time — requires a real interactive terminal, not usable from a non-interactive script/agent call):
 
 ```bash
 ./skill/cfs.py add --interactive
@@ -164,13 +171,15 @@ Auto-lookup from 3dfilamentprofiles.com:
 #### Edit an entry
 
 ```bash
-./skill/cfs.py edit 99002 --values '{"base":{"minTemp":235}}'
+./skill/cfs.py edit 99002 --values '{"base":{"minTemp":235}}' --plan-only   # preview
+./skill/cfs.py edit 99002 --values '{"base":{"minTemp":235}}' --yes        # apply
 ```
 
 #### Delete an entry
 
 ```bash
-./skill/cfs.py delete 99002 --confirm 99002
+./skill/cfs.py delete 99002 --plan-only            # preview
+./skill/cfs.py delete 99002 --confirm 99002        # apply (double-confirm)
 ```
 
 `--confirm` must match the entry ID (double-confirm for irreversible operations).
@@ -181,13 +190,17 @@ Auto-lookup from 3dfilamentprofiles.com:
 ./skill/cfs.py push
 ```
 
-This bumps the version to `9876543210` and uploads the database. **You must reboot the printer after pushing** — the skill does this automatically when used via Devin, but via CLI you need to do it manually:
+This bumps the version to `9876543210`, uploads the database via SCP, checks if the printer is busy, and if idle, reboots the printer automatically and waits for it to come back online.
 
-```bash
-sshpass -p "your_password" ssh root@192.168.0.101 "reboot"
-```
+**If the printer is busy (mid-print):** `cfs.py push` will refuse to reboot and show the active print job details (filename, progress, layer). Options:
+- Wait for the print to finish, then re-run `cfs.py push`
+- `cfs.py push --force-reboot` — reboot anyway (kills the active print)
+- `cfs.py push --no-reboot` — upload only, reboot manually later (cloud sync may overwrite within ~12 minutes)
 
-Wait 2-3 minutes for the printer to come back online.
+**Flags:**
+- `--no-version` — skip version bump (dangerous)
+- `--no-reboot` — skip reboot (dangerous — cloud sync will overwrite without manual reboot)
+- `--force-reboot` — reboot even if printer is busy (kills active print)
 
 #### Verify after reboot
 
@@ -234,7 +247,7 @@ These rules are enforced by the skill and must never be violated:
 | `ssh_user` | SSH username | `root` |
 | `ssh_password` | SSH password (set on printer display) | `your_password` |
 | `db_remote_path` | Path to material_database.json on printer | `/mnt/UDISK/creality/userdata/box/material_database.json` |
-| `ws_port` | WebSocket port (unused after SCP-based verify rewrite) | `9999` |
+| `ws_port` | WebSocket port — used by `push`'s printer-busy check (no longer used by `verify`, which is SCP-based) | `9999` |
 | `version_override` | Version number for cloud-sync protection | `9876543210` |
 | `id_range_start` | First custom entry ID | `99001` |
 | `orcaslicer_config_dir` | OrcaSlicer config directory | `~/.config/OrcaSlicer` |
@@ -248,11 +261,12 @@ These rules are enforced by the skill and must never be violated:
 | 2 | SSH/SCP error |
 | 3 | DB error |
 | 4 | Validation error |
-| 5 | WS error (legacy — verify now uses SCP) |
+| 5 | WS error (only used by `push`'s busy check now — `verify` uses SCP) |
 | 6 | Reboot timeout |
 | 7 | Web lookup error |
-| 8 | OrcaSlicer config error |
+| 8 | OrcaSlicer config error (reserved, currently unused — OrcaSlicer issues are warnings, not hard errors) |
 | 9 | User abort |
+| 10 | Printer busy — reboot refused |
 
 ## File Structure
 
@@ -281,7 +295,9 @@ Creality-custom-filament/
     ├── test_weblookup.py
     ├── test_cli.py
     ├── test_cmd_add.py
-    └── test_cmd_edit_delete.py
+    ├── test_cmd_edit_delete.py
+    ├── test_cmd_push.py
+    └── test_cmd_verify.py
 ```
 
 ## Testing
@@ -293,7 +309,7 @@ cd ~/Dokumente/Daten/Development/skills/Creality-custom-filament
 python -m pytest tests/ -v
 ```
 
-85 tests covering config, DB operations, validation, entry building, SSH/SCP, WS, web lookup, OrcaSlicer matching, and CLI commands.
+106 tests covering config, DB operations, validation, entry building, SSH/SCP, WS, web lookup, OrcaSlicer matching, printer-busy checks, and CLI commands (add/edit/delete/push/verify, including `--plan-only` dry-run behavior).
 
 ### Manual smoke test
 
@@ -322,7 +338,11 @@ sshpass -p "your_password" ssh root@192.168.0.101 "ls /mnt/UDISK/creality/userda
 
 ### Entry disappears after reboot
 
-This means cloud sync overwrote the database. The version was not set to `9876543210` or the reboot did not happen. Always use `cfs.py push` (which bumps the version automatically) and reboot after every push.
+This means cloud sync overwrote the database. The version was not set to `9876543210` or the reboot did not happen. `cfs.py push` handles both automatically (version bump + reboot). If you used `--no-reboot`, you must reboot manually — otherwise cloud sync overwrites within ~12 minutes.
+
+### "PRINTER BUSY — cannot reboot safely"
+
+The printer is mid-print. `cfs.py push` detected an active job via WebSocket status and refused to reboot to avoid killing the print. Either wait for the print to finish and re-run, or use `--force-reboot` (kills the print) or `--no-reboot` (skip reboot, accept cloud-sync risk).
 
 ### OrcaSlicer matches the wrong preset
 

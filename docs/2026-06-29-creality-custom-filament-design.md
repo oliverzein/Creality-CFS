@@ -50,7 +50,7 @@ Creality-custom-filament/
 |---|---|
 | `add --values '<json>'` | Neuen Eintrag (Agent-getrieben) |
 | `add --brand X --name Y --auto-lookup` | Script-Lookup (Fallback) |
-| `add --interactive` | Manuell |
+| `add --interactive` | Manuell (nur echtes interaktives Terminal, nicht für Agent-`exec` geeignet — mehrere sequentielle `input()`-Prompts) |
 | `edit <id> --values '<json>'` | Eintrag ändern |
 | `delete <id> --confirm <id>` | Eintrag löschen (double-confirm) |
 | `list [--all]` | Custom-Einträge anzeigen |
@@ -80,7 +80,7 @@ Creality-custom-filament/
 - **config:** `load_config()`, `create_config_from_template()`
 - **ssh:** `ssh_cmd()`, `scp_pull()`, `scp_push()`, `wait_for_reboot()`
 - **db:** `load_db()`, `save_db()`, `find_custom_entries()`, `next_free_id()`, `build_entry()`, `insert_entry()`, `patch_entry()`, `remove_entry()`, `bump_version()`
-- **ws:** `ws_request()`, `req_materials()`, `verify_entry()`, `verify_version()`
+- **ws:** `ws_request()`, `get_printer_status()`, `check_printer_busy()` (Busy-Check für `push`), `verify_entry()`, `verify_version()` — `req_materials()` wurde 2026-07-01 als toten Code entfernt (unbenutzt seit dem SCP-basierten `verify`-Rewrite, siehe Notizen unten)
 - **weblookup:** `lookup_filament()` (HTTP-Fallback, 3dfilamentprofiles.com)
 - **orcaslicer:** `find_presets()`, `simulate_match()`
 - **cli:** argparse subcommand dispatcher
@@ -97,10 +97,15 @@ Creality-custom-filament/
 | 5 | WS-Fehler |
 | 6 | Reboot-Timeout |
 | 7 | Web-Lookup-Fehler |
-| 8 | OrcaSlicer-Config-Fehler |
+| 8 | OrcaSlicer-Config-Fehler (reserviert, aktuell ungenutzt — OrcaSlicer-Probleme werden als Warning behandelt, kein harter Fehler, siehe Error-Handling) |
 | 9 | User-Abort |
+| 10 | Printer busy — reboot refused |
 
 ## Workflows
+
+**Hinweis (2026-07):** Anders als ursprünglich geplant ist der Ablauf NICHT ein einziger interner Batch (`cfs.py add` macht nicht Backup→Patch→Upload→Reboot→Verify in einem Rutsch). Stattdessen sind Add/Edit/Delete (lokaler DB-Write, `/tmp/cfs-db.json`), `push` (Backup→Upload→Version→Busy-Check→Reboot→Wait) und `verify` (frischer SCP-Pull + Version-/Entry-Check) drei getrennte Subcommands, die vom Agent (SKILL.md) nacheinander aufgerufen werden. Grund: getrennte Exit-Codes/Fehlerbehandlung pro Schritt, und `push` kann so auch für Edit/Delete wiederverwendet werden.
+
+Außerdem: `add`/`edit`/`delete` haben ein `--plan-only` Flag, das den Plan zeigt und ohne Prompt/Änderung mit Exit 0 zurückkehrt — notwendig, weil das eingebaute `input()`-basierte y/n-Prompt bei nicht-interaktiver Ausführung (Agent-`exec`-Tool ohne stdin) mit `EOFError` abstürzt. Ein Lauf ganz ohne `--yes`/`--plan-only` ist deshalb für den Agent-Workflow nicht vorgesehen.
 
 ### Add (neues Filament)
 
@@ -108,11 +113,15 @@ Creality-custom-filament/
 2. Filament-Daten sammeln:
    - Agent hat web_search/webfetch → nutze Tools, extrahiere TDS-Werte
    - Nein → `cfs.py weblookup <brand> <name>` (HTTP-Fallback)
-   - Manuell → `cfs.py add --interactive`
-3. `cfs.py add --values '<json>'` ausführen
+   - Manuell → `cfs.py add --interactive` (nur mit echtem interaktivem Terminal, nicht via Agent-`exec`)
+3. `cfs.py add --values '<json>' --plan-only` ausführen — zeigt Plan (inkl. evtl. OrcaSlicer-Tie-Warnung), kein Prompt, Exit 0
 4. Agent zeigt Plan, User confirm via `ask_user_question`
-5. Script führt Batch aus: Backup → Patch → Upload → Version=9876543210 → Reboot → Wait → Verify
-6. Agent zeigt Report + manuelle Rest-Checkliste:
+5. `cfs.py add --values '<json>' --yes` — schreibt lokal (`/tmp/cfs-db.json`); `--yes` überspringt auch die Tie-Bestätigung
+6. `cfs.py push` — Backup → Version=9876543210 → Busy-Check (WS-Statusabfrage) → Upload → Reboot → Wait
+   - Drucker beschäftigt → Exit 10, Agent bietet: warten / `--force-reboot` (killt Druck) / `--no-reboot` (Cloud-Sync-Risiko)
+   - Reboot-Timeout → Exit 6, manuell rebooten + `verify`
+7. `cfs.py verify --id <id>` — bestätigt, dass der Eintrag den Cloud-Sync überlebt hat
+8. Agent zeigt Report + manuelle Rest-Checkliste:
    - App "CFS RFID": "Get update from printer" → Download → Update
    - Tag schreiben: Custom-Material + Farbe → NFC Sticker programmieren
    - Sticker auf Spule → in CFS einsetzen
@@ -121,20 +130,24 @@ Creality-custom-filament/
 ### Edit
 
 1. `cfs.py list` → Eintrag identifizieren
-2. `cfs.py edit <id> --values '<json>'` (oder --interactive)
-3. Plan → Confirm → Batch → Rest-Checkliste
-4. Hinweis: Bei Farb-/ID-Änderung → Tag neu schreiben
+2. `cfs.py edit <id> --values '<json>' --plan-only` (oder --interactive) → Plan zeigen, kein Prompt
+3. Confirm via `ask_user_question` → `cfs.py edit <id> --values '<json>' --yes`
+4. `cfs.py push` (gleicher Busy-Check-Flow wie Add Schritt 6)
+5. `cfs.py verify --id <id>`
+6. Hinweis: Bei Farb-/ID-Änderung → Tag neu schreiben
 
 ### Delete
 
 1. `cfs.py list` → Eintrag identifizieren
-2. `cfs.py delete <id>` → double-confirm (destructive)
-3. Batch → Report
-4. Hinweis: Alte Tags ungültig → neu programmieren oder aus CFS entfernen
+2. `cfs.py delete <id> --plan-only` → zeigt, was gelöscht würde
+3. Confirm via `ask_user_question` → `cfs.py delete <id> --confirm <id>` → double-confirm (destructive)
+4. `cfs.py push` (gleicher Busy-Check-Flow wie Add Schritt 6)
+5. `cfs.py verify`
+6. Hinweis: Alte Tags ungültig → neu programmieren oder aus CFS entfernen
 
 ### Verify (standalone)
 
-- `cfs.py verify` → WS-Check, zeige Status
+- `cfs.py verify` → frischer SCP-Pull der DB vom Drucker (ignoriert Cache-TTL), prüft Version + Custom-Entries (nicht mehr WS-basiert, siehe Test-Plan-Notizen 2026-06-29)
 
 ### OrcaSlicer-Check
 
@@ -143,7 +156,7 @@ Creality-custom-filament/
 
 ## cfs.py Detail-Design
 
-### `add` Flow (intern)
+### `add` Flow (intern) — ursprünglicher Entwurf, siehe Hinweis oben (2026-07) für tatsächlichen Split in add/push/verify
 
 ```python
 def cmd_add(args):
@@ -153,12 +166,14 @@ def cmd_add(args):
     # 3. DB pull + next_free_id
     # 4. OrcaSlicer pre-check (warning only)
     # 5. Plan anzeigen
-    # 6. Confirm (wenn nicht --yes)
+    # 6. Confirm (wenn nicht --yes/--plan-only)
     # 7. Batch: ssh_backup → build_entry → insert → bump_version → save → scp_push
     # 8. Reboot + wait_for_reboot (timeout 300s)
-    # 9. Verify: req_materials → verify_entry + verify_version
+    # 9. Verify: scp_pull → verify_entry + verify_version (nicht mehr WS-basiert)
     # 10. Report + rest_checklist
 ```
+
+Tatsächlich implementiert als drei separate Subcommands (`add`/`edit`/`delete` lokal, `push` remote inkl. Backup+Reboot, `verify` separat) statt einer internen Funktion, die Schritte 7-9 selbst ausführt — siehe Hinweis am Anfang dieses Abschnitts.
 
 ### `build_entry` — Template-Logik
 
@@ -269,7 +284,9 @@ def cmd_add(args):
 - `test_build_entry.py`: Template-Kopie, Overrides, Preservation
 - `test_orcaslicer.py`: Match-Simulation, Tie-Detection, Type-Filter
 - `test_ssh.py`: ssh_cmd/scp_pull/scp_push/wait_for_reboot (mocked subprocess)
-- `test_ws.py`: req_materials/verify_entry/verify_version (mocked requests)
+- `test_ws.py`: ws_request/check_printer_busy/verify_entry/verify_version (mocked websocket)
+- `test_cmd_push.py`: printer-busy check (idle/busy/paused/force-reboot/no-reboot), version bump wiring
+- `test_cmd_verify.py`: cmd_verify — version OK/mismatch, entry found/missing, cache-TTL bypass
 - `test_weblookup.py`: lookup_filament (mocked requests+bs4)
 - `test_cli.py`: CLI-Integration (subprocess cfs.py)
 

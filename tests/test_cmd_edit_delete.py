@@ -13,6 +13,7 @@ def _make_edit_args(entry_id, **kw):
         "values": None,
         "interactive": False,
         "yes": False,
+        "plan_only": False,
         "config": None,
     }
     defaults.update(kw)
@@ -25,6 +26,7 @@ def _make_delete_args(entry_id, **kw):
         "id": entry_id,
         "confirm": None,
         "yes": False,
+        "plan_only": False,
         "config": None,
     }
     defaults.update(kw)
@@ -88,6 +90,20 @@ def test_cmd_edit_confirm_abort(mock_config, mock_db, tmp_path):
                 assert exc.value.code == cfs.EXIT_ABORT
 
 
+def test_cmd_edit_plan_only_no_prompt_no_changes(mock_config, mock_db, tmp_path):
+    cache = tmp_path / "db.json"
+    cfs.save_db(str(cache), mock_db)
+    with patch.object(cfs, "LOCAL_CACHE", cache):
+        with patch.object(cfs, "LOCAL_CACHE_META", tmp_path / "db.meta.json"):
+            cfs._save_cache_meta(mock_db)
+            args = _make_edit_args("99001", values=json.dumps({"base": {"maxTemp": 225}}), plan_only=True)
+            with patch("builtins.input", side_effect=AssertionError("input() must not be called with --plan-only")):
+                cfs.cmd_edit(mock_config, args)
+    db = cfs.load_db(str(cache))
+    e = cfs.find_entry(db, "99001")
+    assert e["base"]["maxTemp"] != 225
+
+
 def test_cmd_delete_success(mock_config, mock_db, tmp_path):
     cache = tmp_path / "db.json"
     cfs.save_db(str(cache), mock_db)
@@ -148,6 +164,19 @@ def test_cmd_delete_confirm_flag(mock_config, mock_db, tmp_path):
             cfs.cmd_delete(mock_config, args)
     db = cfs.load_db(str(cache))
     assert cfs.find_entry(db, "99001") is None
+
+
+def test_cmd_delete_plan_only_no_prompt_no_changes(mock_config, mock_db, tmp_path):
+    cache = tmp_path / "db.json"
+    cfs.save_db(str(cache), mock_db)
+    with patch.object(cfs, "LOCAL_CACHE", cache):
+        with patch.object(cfs, "LOCAL_CACHE_META", tmp_path / "db.meta.json"):
+            cfs._save_cache_meta(mock_db)
+            args = _make_delete_args("99001", plan_only=True)
+            with patch("builtins.input", side_effect=AssertionError("input() must not be called with --plan-only")):
+                cfs.cmd_delete(mock_config, args)
+    db = cfs.load_db(str(cache))
+    assert cfs.find_entry(db, "99001") is not None
 
 
 def test_cmd_delete_confirm_mismatch(mock_config, mock_db, tmp_path):
