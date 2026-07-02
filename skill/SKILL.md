@@ -21,6 +21,7 @@ Skill guides agent through CRUD workflow; `cfs.py` performs autonomous operation
 - Config: `~/.config/devin/creality-k2.json` (or skill creates from template via `cfs.py` — ask user for IP/password)
 - K2 reachable on network, SSH enabled (Touch display → Settings → Root account information)
 - `cfs.py` is in skill dir, executable
+- `orca.py` is in skill dir (OrcaSlicer preset management)
 
 ## Workflow
 
@@ -40,11 +41,19 @@ Skill guides agent through CRUD workflow; `cfs.py` performs autonomous operation
      - `cfs.py push --no-reboot` (upload only, cloud sync risk — require explicit confirmation)
    - **If reboot times out:** `cfs.py push` exits with code 6. Tell user to reboot manually, then run `cfs.py verify`.
 7. Run `cfs.py verify --id <id>` — confirms entry survived cloud sync
-8. Agent shows report + manual remaining checklist:
+8. **OrcaSlicer Preset** — generate standalone user preset:
+   - `orca.py preset <id> --plan-only` — shows preset name, filament_id, output path (safe, non-interactive)
+   - Agent shows plan, user confirms via `ask_user_question`
+   - On confirm: `orca.py preset <id> --yes` — writes preset JSON + `.info` file (sync_info=create)
+   - **Manual steps for user** (agent cannot do these):
+     - [ ] Start OrcaSlicer
+     - [ ] Sync Presets (pushes preset to Cloud via sync_info=create)
+     - [ ] Verify: `orca.py check <id>` — should show user preset as winner with score 30
+     - [ ] On tie: disable competing presets in OrcaSlicer (right-click → Disable)
+9. Agent shows report + manual remaining checklist:
    - [ ] App "CFS RFID": enable "Get update from printer" → IP + SSH password → Download Database → Update
    - [ ] Write tag: select custom material + color → program NFC sticker
    - [ ] Stick sticker on spool → insert into CFS
-   - [ ] OrcaSlicer: press Sync, run `cfs.py orcacheck <id>` to verify
 
 ### Edit
 1. `cfs.py list` → identify entry
@@ -54,6 +63,10 @@ Skill guides agent through CRUD workflow; `cfs.py` performs autonomous operation
 5. Run `cfs.py push` — uploads + reboots (same busy-check flow as Add step 6)
 6. Run `cfs.py verify --id <id>` — confirms changes survived cloud sync
 7. Note: On color/ID change → rewrite tag
+8. **OrcaSlicer Preset update** (if name/brand/type changed):
+   - `orca.py preset <id> --force --plan-only` — shows updated preset plan
+   - On confirm: `orca.py preset <id> --force --yes` — overwrites existing preset
+   - Manual: restart OrcaSlicer, Sync Presets, verify with `orca.py check <id>`
 
 ### Delete
 1. `cfs.py list` → identify entry
@@ -68,8 +81,17 @@ Skill guides agent through CRUD workflow; `cfs.py` performs autonomous operation
 - `cfs.py verify` → pulls DB from printer, checks version + entry status
 
 ### OrcaSlicer-Check
-- `cfs.py orcacheck <id>` → preset installation + tie analysis
+- `orca.py check <id>` → preset matching analysis (replaces deprecated `cfs.py orcacheck`)
+- Scans system + user presets, scores by name substring, reports all candidates with scores
 - On tie: agent gives instructions to disable competing presets in OrcaSlicer
+- `cfs.py orcacheck` is deprecated (buggy find_presets/simulate_match) — use `orca.py check` instead
+
+### OrcaSlicer Preset (standalone)
+For cases where only a preset is needed (no DB change):
+1. Ensure DB cache is current: `cfs.py pull`
+2. `orca.py preset <id> --plan-only` → user confirms → `orca.py preset <id> --yes`
+3. Manual: start OrcaSlicer, Sync Presets, verify with `orca.py check <id>`
+4. `orca.py flatten` can also flatten an existing inherited preset manually
 
 ## Critical Rules (Iron Rules)
 

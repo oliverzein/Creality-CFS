@@ -890,6 +890,7 @@ def main():
         print(json.dumps(result, indent=2))
 
     elif args.command == "orcacheck":
+        print("WARNING: orcacheck is deprecated — use `orca.py check <id>` instead (correct matching logic).", file=sys.stderr)
         config = load_config(args.config) if getattr(args, "config", None) else load_config()
         db = _get_cached_db(config)
         e = find_entry(db, args.id)

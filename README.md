@@ -216,10 +216,10 @@ Pulls the database from the printer and checks:
 #### OrcaSlicer diagnostics
 
 ```bash
-./skill/cfs.py orcacheck 99002
+python3 skill/orca.py check 99002
 ```
 
-Checks if OrcaSlicer has a matching preset installed and detects tie conflicts (multiple presets matching with the same score).
+Checks OrcaSlicer preset matching for a DB entry — scans system + user presets, scores by name substring, reports all candidates with scores and filament_ids. Replaces the deprecated `cfs.py orcacheck` (which has a buggy `find_presets` implementation).
 
 #### Web lookup (standalone)
 
@@ -228,6 +228,64 @@ Checks if OrcaSlicer has a matching preset installed and detects tie conflicts (
 ```
 
 Returns filament data as JSON. Used as a fallback when the agent has no web search tools.
+
+## OrcaSlicer Preset Management (`orca.py`)
+
+`skill/orca.py` is a standalone CLI for managing OrcaSlicer user presets in the context of Creality K2 custom filament entries. It integrates the logic from the former `skill/tools/` scripts into the agent workflow.
+
+### Generating a standalone preset
+
+```bash
+python3 skill/orca.py preset 99002 --plan-only
+python3 skill/orca.py preset 99002 --yes
+```
+
+Generates a standalone OrcaSlicer user preset from a DB entry: finds a system preset as template, overrides identity + temperature fields from the DB, generates a unique `filament_id`, writes the preset JSON + `.info` file with `sync_info=create` for Cloud push.
+
+**Flags:**
+- `--plan-only` — show plan without writing (safe for non-interactive use)
+- `--yes` — skip confirmation prompt
+- `--from-system <name>` — explicit system preset as template (auto-discovery otherwise)
+- `--force` — overwrite existing preset
+
+### Checking preset matching
+
+```bash
+python3 skill/orca.py check 99002
+```
+
+Simulates `CrealityPrintAgent::match_filament_preset` — scans system + user presets, scores by name substring, reports all candidates with scores and filament_ids. Replaces deprecated `cfs.py orcacheck`.
+
+### Flattening an inherited preset
+
+```bash
+python3 skill/orca.py flatten \
+    ~/.config/OrcaSlicer/user/<UUID>/filament/"Hyper PLA Optimized.json" \
+    "Creality Hyper PLA Optimized" \
+    "P959e9ac23c0d80"
+```
+
+Flattens an inherited preset (with non-empty `inherits`) into a standalone preset. Workaround for OrcaSlicer 2.4.1 AMS sync bug (PR #13315).
+
+### Manual steps after preset generation
+
+`orca.py preset` writes the files, but OrcaSlicer must be started manually to push to Cloud:
+1. Start OrcaSlicer
+2. Sync Presets (pushes preset to Cloud via `sync_info=create`)
+3. Verify: `orca.py check <id>` — should show user preset as winner with score 30
+4. On tie: disable competing presets in OrcaSlicer (right-click → Disable)
+
+### orca.py exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | OK |
+| 1 | Config/DB cache error |
+| 2 | OrcaSlicer not found |
+| 3 | Preset already exists (use --force) |
+| 4 | No system preset found for type |
+| 5 | Validation error |
+| 9 | User abort |
 
 ## Iron Rules
 
@@ -275,7 +333,11 @@ Creality-custom-filament/
 ├── skill/
 │   ├── SKILL.md                    # Agent instructions (workflow + iron rules)
 │   ├── cfs.py                      # CLI tool (executable)
-│   └── config.example.json         # Config template
+│   ├── orca.py                     # OrcaSlicer preset management CLI
+│   ├── config.example.json         # Config template
+│   └── tools/
+│       ├── flatten_preset.py       # (deprecated — use orca.py flatten)
+│       └── orca_match_sim.py       # (deprecated — use orca.py check)
 ├── README.md                       # This file
 ├── .gitignore
 ├── docs/
@@ -297,7 +359,8 @@ Creality-custom-filament/
     ├── test_cmd_add.py
     ├── test_cmd_edit_delete.py
     ├── test_cmd_push.py
-    └── test_cmd_verify.py
+    ├── test_cmd_verify.py
+    └── test_orca.py
 ```
 
 ## Testing
@@ -309,7 +372,7 @@ cd ~/Dokumente/Daten/Development/skills/Creality-custom-filament
 python -m pytest tests/ -v
 ```
 
-106 tests covering config, DB operations, validation, entry building, SSH/SCP, WS, web lookup, OrcaSlicer matching, printer-busy checks, and CLI commands (add/edit/delete/push/verify, including `--plan-only` dry-run behavior).
+106+ tests covering config, DB operations, validation, entry building, SSH/SCP, WS, web lookup, OrcaSlicer matching, printer-busy checks, CLI commands (add/edit/delete/push/verify, including `--plan-only` dry-run behavior), and orca.py preset management.
 
 ### Manual smoke test
 
