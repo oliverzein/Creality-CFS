@@ -334,10 +334,7 @@ Creality-custom-filament/
 │   ├── SKILL.md                    # Agent instructions (workflow + iron rules)
 │   ├── cfs.py                      # CLI tool (executable)
 │   ├── orca.py                     # OrcaSlicer preset management CLI
-│   ├── config.example.json         # Config template
-│   └── tools/
-│       ├── flatten_preset.py       # (deprecated — use orca.py flatten)
-│       └── orca_match_sim.py       # (deprecated — use orca.py check)
+│   └── config.example.json         # Config template
 ├── README.md                       # This file
 ├── .gitignore
 ├── docs/
