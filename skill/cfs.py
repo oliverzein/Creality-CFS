@@ -337,14 +337,15 @@ def ssh_backup(config):
 
 
 def ssh_reboot(config):
-    # fire and forget — connection will close
+    # sync filesystem buffers before reboot to prevent flash corruption on /mnt/UDISK
+    # K2 uses procd (OpenWrt) — reboot is hard, so we sync explicitly first
     try:
         subprocess.run(
-            _ssh_base_cmd(config) + ["reboot"],
-            capture_output=True, text=True, timeout=10,
+            _ssh_base_cmd(config) + ["sync; sync; sleep 2; reboot"],
+            capture_output=True, text=True, timeout=15,
         )
     except (subprocess.TimeoutExpired, Exception):
-        pass  # expected — connection drops
+        pass  # expected — connection drops during reboot
 
 
 # === WS Section ===
@@ -771,9 +772,13 @@ def cmd_push(config, args):
     scp_push(config, str(LOCAL_CACHE))
     print(f"DB pushed: {db['result']['count']} entries, version {db['result']['version']}")
 
+    # Wait for filesystem flush on printer before reboot
+    # SCP returns when transfer is complete, but printer OS may still write to flash
+    time.sleep(3)
+
     if getattr(args, "no_reboot", False):
         print("WARNING: --no-reboot set. Cloud sync may overwrite the DB within ~12 minutes.")
-        print("Reboot manually: sshpass -p '<password>' ssh root@<ip> 'reboot'")
+        print("Reboot manually: sshpass -p '<password>' ssh root@<ip> 'sync; sync; reboot'")
         return
 
     # Reboot + wait

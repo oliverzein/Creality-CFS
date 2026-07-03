@@ -59,7 +59,8 @@ def test_push_idle_reboots(mock_config, mock_db, tmp_path):
                 with patch("cfs.websocket.create_connection", return_value=_mock_ws(_idle_status())):
                     with patch("cfs.ssh_reboot") as mock_reboot:
                         with patch("cfs.wait_for_reboot", return_value=True):
-                            cfs.cmd_push(mock_config, _make_args())
+                            with patch("cfs.time.sleep"):
+                                cfs.cmd_push(mock_config, _make_args())
     mock_scp.assert_called_once()
     mock_reboot.assert_called_once_with(mock_config)
 
@@ -90,7 +91,8 @@ def test_push_busy_force_reboot(mock_config, mock_db, tmp_path):
                 with patch("cfs.websocket.create_connection", return_value=_mock_ws(_busy_status())):
                     with patch("cfs.ssh_reboot") as mock_reboot:
                         with patch("cfs.wait_for_reboot", return_value=True):
-                            cfs.cmd_push(mock_config, _make_args(force_reboot=True))
+                            with patch("cfs.time.sleep"):
+                                cfs.cmd_push(mock_config, _make_args(force_reboot=True))
     mock_reboot.assert_called_once_with(mock_config)
 
 
@@ -103,7 +105,8 @@ def test_push_no_reboot_skips(mock_config, mock_db, tmp_path):
             with patch("cfs.scp_push"):
                 with patch("cfs.websocket.create_connection") as mock_ws_conn:
                     with patch("cfs.ssh_reboot") as mock_reboot:
-                        cfs.cmd_push(mock_config, _make_args(no_reboot=True))
+                        with patch("cfs.time.sleep"):
+                            cfs.cmd_push(mock_config, _make_args(no_reboot=True))
     mock_reboot.assert_not_called()
     mock_ws_conn.assert_not_called()  # no busy check when --no-reboot
 
@@ -118,9 +121,10 @@ def test_push_reboot_timeout(mock_config, mock_db, tmp_path):
                 with patch("cfs.websocket.create_connection", return_value=_mock_ws(_idle_status())):
                     with patch("cfs.ssh_reboot"):
                         with patch("cfs.wait_for_reboot", return_value=False):
-                            with pytest.raises(SystemExit) as exc:
-                                cfs.cmd_push(mock_config, _make_args())
-                            assert exc.value.code == cfs.EXIT_REBOOT
+                            with patch("cfs.time.sleep"):
+                                with pytest.raises(SystemExit) as exc:
+                                    cfs.cmd_push(mock_config, _make_args())
+                                assert exc.value.code == cfs.EXIT_REBOOT
 
 
 def test_push_no_version_skips_bump(mock_config, mock_db, tmp_path):
@@ -134,6 +138,26 @@ def test_push_no_version_skips_bump(mock_config, mock_db, tmp_path):
                 with patch("cfs.websocket.create_connection", return_value=_mock_ws(_idle_status())):
                     with patch("cfs.ssh_reboot"):
                         with patch("cfs.wait_for_reboot", return_value=True):
-                            cfs.cmd_push(mock_config, _make_args(no_version=True))
+                            with patch("cfs.time.sleep"):
+                                cfs.cmd_push(mock_config, _make_args(no_version=True))
     db = cfs.load_db(str(cache))
     assert db["result"]["version"] == original_version  # unchanged
+
+
+def test_ssh_reboot_uses_sync(mock_config):
+    """ssh_reboot must sync filesystem before reboot to prevent flash corruption."""
+    with patch("cfs.subprocess.run") as mock_run:
+        cfs.ssh_reboot(mock_config)
+    mock_run.assert_called_once()
+    cmd = mock_run.call_args[0][0]
+    cmd_str = " ".join(cmd)
+    assert "sync" in cmd_str
+    assert "reboot" in cmd_str
+
+
+def test_ssh_reboot_timeout_is_15s(mock_config):
+    """ssh_reboot timeout must be 15s (sync needs more time than old 10s)."""
+    with patch("cfs.subprocess.run") as mock_run:
+        cfs.ssh_reboot(mock_config)
+    kwargs = mock_run.call_args[1]
+    assert kwargs.get("timeout") == 15
