@@ -9,31 +9,36 @@ import cfs
 
 @pytest.fixture
 def orca_dir(tmp_path):
-    """Fake OrcaSlicer config dir with preset JSON files."""
+    """Fake OrcaSlicer config dir with user filament presets (real schema)."""
     d = tmp_path / "orcaslicer"
-    d.mkdir()
-    # system preset
-    (d / "SUNLU_PLA.json").write_text(json.dumps({
+    filament_dir = d / "user" / "test-uuid" / "filament"
+    filament_dir.mkdir(parents=True)
+    # system preset (copied to user dir for test purposes)
+    (filament_dir / "SUNLU_PLA.json").write_text(json.dumps({
         "name": "SUNLU PLA+ @System",
-        "type": "PLA",
+        "type": "filament",
+        "filament_type": ["PLA"],
         "filament_id": "OGFSNL03",
         "system": True,
     }))
-    (d / "SUNLU_PLA_2.json").write_text(json.dumps({
+    (filament_dir / "SUNLU_PLA_2.json").write_text(json.dumps({
         "name": "SUNLU PLA+ 2.0 @System",
-        "type": "PLA",
+        "type": "filament",
+        "filament_type": ["PLA"],
         "filament_id": "OGFSNL04",
         "system": True,
     }))
-    (d / "SUNLU_SILK_PLA.json").write_text(json.dumps({
+    (filament_dir / "SUNLU_SILK_PLA.json").write_text(json.dumps({
         "name": "SUNLU Silk PLA+ @System",
-        "type": "PLA",
+        "type": "filament",
+        "filament_type": ["PLA"],
         "filament_id": "OGFSNL05",
         "system": True,
     }))
-    (d / "SUNLU_PETG.json").write_text(json.dumps({
+    (filament_dir / "SUNLU_PETG.json").write_text(json.dumps({
         "name": "SUNLU PETG @System",
-        "type": "PETG",
+        "type": "filament",
+        "filament_type": ["PETG"],
         "filament_id": "OGFSNL06",
         "system": True,
     }))
@@ -49,8 +54,8 @@ def test_find_presets(orca_dir):
 
 def test_simulate_match_exact():
     presets = [
-        {"name": "SUNLU PLA+ @System", "type": "PLA", "system": True},
-        {"name": "SUNLU PETG @System", "type": "PETG", "system": True},
+        {"name": "SUNLU PLA+ @System", "filament_type": ["PLA"], "system": True},
+        {"name": "SUNLU PETG @System", "filament_type": ["PETG"], "system": True},
     ]
     result = cfs.simulate_match(presets, "Sunlu PLA+", "Sunlu", "PLA")
     assert result["matches"][0]["preset"] == "SUNLU PLA+ @System"
@@ -60,9 +65,9 @@ def test_simulate_match_exact():
 
 def test_simulate_match_tie():
     presets = [
-        {"name": "SUNLU PLA+ @System", "type": "PLA", "system": True},
-        {"name": "SUNLU PLA+ 2.0 @System", "type": "PLA", "system": True},
-        {"name": "SUNLU Silk PLA+ @System", "type": "PLA", "system": True},
+        {"name": "SUNLU PLA+ @System", "filament_type": ["PLA"], "system": True},
+        {"name": "SUNLU PLA+ 2.0 @System", "filament_type": ["PLA"], "system": True},
+        {"name": "SUNLU Silk PLA+ @System", "filament_type": ["PLA"], "system": True},
     ]
     result = cfs.simulate_match(presets, "PLA+", "Sunlu", "PLA")
     # all 3 score 30 (brand_name "PLA+" is substring of all)
@@ -71,8 +76,8 @@ def test_simulate_match_tie():
 
 def test_simulate_match_silk_excluded():
     presets = [
-        {"name": "SUNLU PLA+ @System", "type": "PLA", "system": True},
-        {"name": "SUNLU Silk PLA+ @System", "type": "PLA", "system": True},
+        {"name": "SUNLU PLA+ @System", "filament_type": ["PLA"], "system": True},
+        {"name": "SUNLU Silk PLA+ @System", "filament_type": ["PLA"], "system": True},
     ]
     result = cfs.simulate_match(presets, "Sunlu PLA+", "Sunlu", "PLA")
     # "Sunlu PLA+" not substring of "SUNLU Silk PLA+" → silk scores 10 only
@@ -89,10 +94,10 @@ def test_simulate_match_no_preset():
 
 def test_simulate_match_type_mismatch():
     presets = [
-        {"name": "SUNLU PETG @System", "type": "PETG", "system": True},
+        {"name": "SUNLU PETG @System", "filament_type": ["PETG"], "system": True},
     ]
     result = cfs.simulate_match(presets, "Sunlu PETG", "Sunlu", "PLA")
-    assert result["matches"] == []  # hard filtered
+    assert result["matches"] == []  # hard filtered by filament_type
 
 
 def test_orcacheck_integration(orca_dir, mock_config):

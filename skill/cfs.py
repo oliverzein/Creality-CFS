@@ -157,7 +157,18 @@ def remove_entry(db, entry_id):
 
 
 def bump_version(db, version=9876543210):
-    db["result"]["version"] = str(version)
+    """Bump DB version. Auto-increment if current >= override (ensures CFS RFID app sees update).
+    App compares newVer > storedVer, so constant version = 'no update available'."""
+    try:
+        current = int(db.get("result", {}).get("version", 0))
+    except (ValueError, TypeError):
+        current = 0
+    if current >= version:
+        new_ver = current + 1
+    else:
+        new_ver = version
+    db["result"]["version"] = str(new_ver)
+    return new_ver
 
 
 def count_autofix(db):
@@ -359,8 +370,15 @@ def verify_entry(materials, entry_id):
 
 
 def verify_version(db, expected):
+    """Check version >= expected (cloud sync sets ~epoch, which is < override).
+    Auto-increment may push version above override, so exact match would false-fail."""
     actual = db.get("result", {}).get("version") if isinstance(db, dict) else None
-    return str(actual) == str(expected)
+    if actual is None:
+        return False
+    try:
+        return int(actual) >= int(expected)
+    except (ValueError, TypeError):
+        return str(actual) == str(expected)
 
 
 def get_printer_status(config):
@@ -447,16 +465,31 @@ def lookup_filament(brand, name):
 # === OrcaSlicer Section ===
 
 def find_presets(config_dir, vendor, filament_type):
-    d = Path(os.path.expanduser(config_dir))
-    if not d.exists():
+    """Find filament presets in OrcaSlicer config matching the given type.
+
+    Scans user/<UUID>/filament/*.json. Real OrcaSlicer schema:
+    type="filament", filament_type=["PLA"] (array).
+    """
+    base = Path(os.path.expanduser(config_dir))
+    if not base.exists():
         return []
     presets = []
-    for p in d.glob("*.json"):
-        try:
-            data = json.loads(p.read_text())
-        except (json.JSONDecodeError, OSError):
-            continue
-        if data.get("type") == filament_type:
+    user_root = base / "user"
+    if user_root.exists():
+        for p in user_root.rglob("filament/*.json"):
+            try:
+                data = json.loads(p.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue
+            if data.get("type") != "filament":
+                # user presets may omit type — check filament_type instead
+                if not data.get("filament_type"):
+                    continue
+            ft = data.get("filament_type")
+            if isinstance(ft, list) and ft:
+                ft = ft[0]
+            if ft != filament_type:
+                continue
             data.setdefault("system", False)
             presets.append(data)
     return presets
@@ -469,8 +502,11 @@ def simulate_match(presets, brand_name, vendor, filament_type):
     bn_lower = brand_name.lower()
     v_lower = vendor.lower()
     for p in presets:
-        if p.get("type") != filament_type:
-            continue  # hard filter
+        ft = p.get("filament_type")
+        if isinstance(ft, list) and ft:
+            ft = ft[0]
+        if ft != filament_type:
+            continue  # hard filter by filament_type
         p_name_lower = p["name"].lower()
         score = 0
         if bn_lower in p_name_lower:
@@ -564,7 +600,7 @@ def cmd_add(config, args):
     # 4. OrcaSlicer check
     plan_only = getattr(args, "plan_only", False)
     orca_result = orcacheck(config, values)
-    if "ties" in orca_result and len(orca_result.get("ties", [])) >= 1:
+    if "ties" in orca_result and len(orca_result.get("ties", [])) > 1:
         print(f"OrcaSlicer warning: {orca_result['recommendation']}")
         if plan_only:
             pass  # plan-only never applies changes — nothing to confirm yet
@@ -760,7 +796,7 @@ def cmd_verify(config, args):
     actual_version = db["result"]["version"]
     version_ok = verify_version(db, expected_version)
     print(f"Version (printer): {actual_version}")
-    print(f"Version expected:  {expected_version} — {'OK' if version_ok else 'MISMATCH'}")
+    print(f"Version floor:     {expected_version} — {'OK' if version_ok else 'MISMATCH (cloud sync may have overwritten)'}")
     if not version_ok:
         print("WARNING: Version mismatch — cloud sync may have overwritten the DB.")
     materials = db["result"]["list"]

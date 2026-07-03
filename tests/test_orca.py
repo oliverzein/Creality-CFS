@@ -105,13 +105,13 @@ class TestBuildStandalonePreset:
             "version": "2.4.0.3",
         }
         flat = orca.build_standalone_preset(entry, system_preset)
-        assert flat["name"] == "Sunlu Sunlu PLA+"
+        assert flat["name"] == "Sunlu PLA+"  # DB name already has vendor prefix (Rule 2)
         assert flat["filament_id"].startswith("P")
         assert flat["inherits"] == ""
         assert flat["from"] == "User"
-        assert flat["filament_vendor"] == "Sunlu"
-        assert flat["filament_type"] == "PLA"
-        assert flat["type"] == "filament"
+        assert flat["filament_vendor"] == ["Sunlu"]  # array in OrcaSlicer presets
+        assert flat["filament_type"] == ["PLA"]  # array in OrcaSlicer presets
+        assert "type" not in flat  # user presets don't have type field
 
     def test_temperatures_from_db(self, mock_db):
         entry = mock_db["result"]["list"][1]  # minTemp=205, maxTemp=215
@@ -153,7 +153,8 @@ class TestBuildStandalonePreset:
         flat = orca.build_standalone_preset(entry, system_preset)
         assert flat["fan_min_speed"] == ["30"]
         assert flat["fan_max_speed"] == ["100"]
-        assert flat["filament_flow_ratio"] == ["0.98"]
+        # kvParam overrides template values — entry 0 has filament_flow_ratio="1.0"
+        assert flat["filament_flow_ratio"] == ["1.0"]
 
     def test_filament_settings_id_matches_name(self, mock_db):
         entry = mock_db["result"]["list"][1]
@@ -170,11 +171,13 @@ class TestWriteInfoFile:
         preset_path.write_text("{}")
         info_path = orca.write_info_file(preset_path, sync_info="create")
         assert info_path.exists()
-        info = json.loads(info_path.read_text())
-        assert info["sync_info"] == "create"
-        assert info["setting_id"] == ""
-        assert info["base_id"] == ""
-        assert "updated_time" in info
+        # .info is key=value format (not JSON)
+        content = info_path.read_text()
+        lines = dict(line.split(" = ", 1) for line in content.strip().split("\n"))
+        assert lines["sync_info"] == "create"
+        assert lines["setting_id"] == ""
+        assert lines["base_id"] == ""
+        assert "updated_time" in lines
 
     def test_info_path_is_correct(self, tmp_path):
         preset_path = tmp_path / "My Preset.json"

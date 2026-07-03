@@ -78,9 +78,11 @@ def find_orca_user_dir(config_dir=None):
     return None
 
 
-def generate_filament_id(name):
-    """Generate a unique filament_id from name: MD5 hash, 'P' prefix, 14 chars."""
-    h = hashlib.md5(name.encode()).hexdigest()
+def generate_filament_id(name, db_id=""):
+    """Generate a unique filament_id from name + DB id: MD5 hash, 'P' prefix, 14 chars.
+    Including db_id prevents collisions when regenerating presets for the same filament name
+    (e.g. after Cloud deletion + re-creation)."""
+    h = hashlib.md5(f"{name} {db_id}".encode()).hexdigest()
     return "P" + h[:13]
 
 
@@ -140,15 +142,28 @@ def find_preset_by_name(name, hint_dir=None):
 
 
 def write_info_file(preset_path, sync_info="create", setting_id="", base_id=""):
-    """Write a .info file alongside a preset JSON."""
+    """Write a .info file alongside a preset JSON.
+    OrcaSlicer uses key=value format (not JSON): 'sync_info = create\\nsetting_id = ...'
+    """
     info_path = preset_path.with_suffix(".info")
-    info = {
-        "sync_info": sync_info,
-        "setting_id": setting_id,
-        "base_id": base_id,
-        "updated_time": int(time.time()),
-    }
-    info_path.write_text(json.dumps(info, indent="\t") + "\n")
+    # Extract user_id from path: user/<UUID>/filament/[base/]<name>.info
+    user_id = ""
+    try:
+        parts = preset_path.parts
+        if "user" in parts:
+            idx = parts.index("user")
+            if idx + 1 < len(parts):
+                user_id = parts[idx + 1]
+    except (ValueError, IndexError):
+        pass
+    lines = [
+        f"sync_info = {sync_info}",
+        f"user_id = {user_id}",
+        f"setting_id = {setting_id}",
+        f"base_id = {base_id}",
+        f"updated_time = {int(time.time())}",
+    ]
+    info_path.write_text("\n".join(lines) + "\n")
     return info_path
 
 
@@ -164,23 +179,27 @@ def build_standalone_preset(db_entry, system_preset):
     b = db_entry["base"]
     kv = db_entry.get("kvParam", {})
 
-    # Strip system-specific fields
-    for key in ("_path", "setting_id", "instantiation", "compatible_printers",
-                "compatible_printers_condition"):
+    # Strip system-specific fields (keep compatible_printers if template is a user preset)
+    is_user_template = system_preset.get("from") == "User"
+    strip_keys = ["_path", "setting_id", "instantiation"]
+    if not is_user_template:
+        strip_keys += ["compatible_printers", "compatible_printers_condition"]
+    for key in strip_keys:
         flat.pop(key, None)
 
-    # Identity from DB
-    preset_name = f"{b['brand']} {b['name']}"
+    # Identity from DB — Rule 2: DB name already includes vendor, so use as-is
+    # Preset fields that are arrays must stay arrays; scalar fields stay scalar.
+    preset_name = b['name'] if b['name'].lower().startswith(b['brand'].lower()) else f"{b['brand']} {b['name']}"
     flat["name"] = preset_name
-    flat["filament_id"] = generate_filament_id(preset_name)
-    flat["filament_vendor"] = b["brand"]
-    flat["filament_type"] = b["meterialType"]
+    flat["filament_id"] = generate_filament_id(preset_name, b.get("id", ""))
+    flat["filament_vendor"] = [b["brand"]]  # array in OrcaSlicer presets
+    flat["filament_type"] = [b["meterialType"]]  # array in OrcaSlicer presets
     flat["inherits"] = ""
     flat["from"] = "User"
     flat["filament_settings_id"] = [preset_name]
-    flat["type"] = "filament"
+    flat.pop("type", None)  # user presets don't have 'type' field; OrcaSlicer infers from context
 
-    # Temperature from DB
+    # Temperature from DB (base fields — authoritative for printer firmware)
     flat["nozzle_temperature"] = [str(b["maxTemp"])]
     flat["nozzle_temperature_range_low"] = [str(b["minTemp"])]
     flat["nozzle_temperature_range_high"] = [str(b["maxTemp"])]
@@ -188,6 +207,37 @@ def build_standalone_preset(db_entry, system_preset):
     # Density from DB if available
     if "density" in b:
         flat["filament_density"] = str(b["density"])
+
+    # default_filament_colour — OrcaSlicer expects hex color or empty string.
+    # DB colors may be text names (e.g. "Midnight Black") — use empty to avoid white swatch.
+    if "colors" in b and b["colors"]:
+        c = b["colors"][0]
+        if c.startswith("#") and len(c) in (7, 4):
+            flat["default_filament_colour"] = [c]
+        else:
+            flat["default_filament_colour"] = [""]
+    else:
+        flat["default_filament_colour"] = [""]
+
+    # kvParam override — copy all non-nil kvParam values from DB to preset.
+    # Preset fields are arrays of strings; DB kvParam values are strings.
+    # Only override keys that already exist in the preset (OrcaSlicer schema).
+    # Skip identity/inheritance fields — these are set explicitly above for standalone preset.
+    SKIP_KEYS = {"inherits", "name", "filament_id", "filament_vendor", "filament_type",
+                 "filament_settings_id", "type", "from",
+                 "compatible_printers", "compatible_printers_condition",
+                 "compatible_prints", "compatible_prints_condition",
+                 "default_filament_colour"}
+    # Scalar fields in OrcaSlicer presets (not arrays). kvParam override must
+    # keep these scalar — wrapping in [] would break OrcaSlicer parsing.
+    SCALAR_KEYS = {"filament_density"}
+    for k, v in kv.items():
+        if v is None or v == "nil" or v == "":
+            continue
+        if k in SKIP_KEYS:
+            continue
+        if k in flat:
+            flat[k] = str(v) if k in SCALAR_KEYS else [str(v)]
 
     # Version
     if "version" not in flat:
@@ -203,8 +253,8 @@ def cmd_preset(args):
         die(EXIT_VALIDATE, f"Entry not found in DB: {args.id}")
 
     b = entry["base"]
-    preset_name = f"{b['brand']} {b['name']}"
-    filament_id = generate_filament_id(preset_name)
+    preset_name = b['name'] if b['name'].lower().startswith(b['brand'].lower()) else f"{b['brand']} {b['name']}"
+    filament_id = generate_filament_id(preset_name, b.get("id", ""))
 
     # Find OrcaSlicer user dir
     user_dir = find_orca_user_dir()
@@ -217,9 +267,34 @@ def cmd_preset(args):
     if preset_path.exists() and not args.force:
         die(EXIT_EXISTS, f"Preset already exists: {preset_path}. Use --force to overwrite.")
 
-    # Find system preset as template
+    # Find template preset — prefer existing user preset (has all fields + compatible_printers),
+    # fall back to system preset
     system_preset = None
-    if args.from_system:
+    user_template = None
+    if user_dir.exists():
+        for p in user_dir.glob("*.json"):
+            if p.name == f"{preset_name}.json":
+                continue  # don't use self as template
+            try:
+                d = json.loads(p.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue
+            if d.get("type") != "filament":
+                # Some user presets omit 'type' field — check filament_type instead
+                if not d.get("filament_type"):
+                    continue
+            ft = d.get("filament_type")
+            if isinstance(ft, list) and ft:
+                ft = ft[0]
+            if ft != b["meterialType"]:
+                continue
+            if not d.get("inherits"):  # standalone preset, not inherited variant
+                user_template = d
+                user_template["_path"] = str(p)
+                break
+    if user_template:
+        system_preset = user_template
+    elif args.from_system:
         system_preset_path = find_preset_by_name(args.from_system)
         if system_preset_path is None:
             die(EXIT_NO_SYSTEM, f"System preset not found: {args.from_system}")
@@ -258,12 +333,13 @@ def cmd_preset(args):
 
     # Write preset
     preset_path.write_text(json.dumps(flat, indent="\t", ensure_ascii=False) + "\n")
-    info_path = write_info_file(preset_path, sync_info="create")
+    # filament/ .info: empty sync_info (OrcaSlicer manages sync state), no setting_id until Cloud assigns one
+    info_path = write_info_file(preset_path, sync_info="", setting_id="")
     print(f"OK: wrote preset {preset_path}", file=sys.stderr)
     print(f"OK: wrote info {info_path}", file=sys.stderr)
     print(f"\nNext steps:")
     print(f"  1. Start OrcaSlicer")
-    print(f"  2. Sync Presets (pushes preset to Cloud via sync_info=create)")
+    print(f"  2. Sync Presets (pushes preset to Cloud)")
     print(f"  3. Verify: python3 {Path(__file__).name} check {args.id}")
 
 

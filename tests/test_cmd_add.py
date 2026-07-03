@@ -68,7 +68,7 @@ def test_cmd_add_orcacheck_warning_prompts_without_yes(mock_config, mock_db, tmp
                 "brand": "eSun", "name": "eSun PLA+", "type": "PLA",
                 "minTemp": 205, "maxTemp": 215,
             }), yes=False)
-            with patch.object(cfs, "orcacheck", return_value={"ties": [{"preset": "X"}], "recommendation": "Tie!"}):
+            with patch.object(cfs, "orcacheck", return_value={"ties": [{"preset": "X"}, {"preset": "Y"}], "recommendation": "Tie!"}):
                 with patch("builtins.input", return_value="n"):
                     with pytest.raises(SystemExit) as exc:
                         cfs.cmd_add(mock_config, args)
@@ -91,7 +91,7 @@ def test_cmd_add_orcacheck_tie_yes_flag_skips_prompt(mock_config, mock_db, tmp_p
                 "brand": "eSun", "name": "eSun PLA+", "type": "PLA",
                 "minTemp": 205, "maxTemp": 215,
             }), yes=True)
-            with patch.object(cfs, "orcacheck", return_value={"ties": [{"preset": "X"}], "recommendation": "Tie!"}):
+            with patch.object(cfs, "orcacheck", return_value={"ties": [{"preset": "X"}, {"preset": "Y"}], "recommendation": "Tie!"}):
                 with patch("builtins.input", side_effect=AssertionError("input() must not be called with --yes")):
                     result = cfs.cmd_add(mock_config, args)
     assert result is not None
@@ -128,7 +128,7 @@ def test_cmd_add_plan_only_with_tie_no_prompt(mock_config, mock_db, tmp_path):
                 "brand": "eSun", "name": "eSun PLA+", "type": "PLA",
                 "minTemp": 205, "maxTemp": 215,
             }), plan_only=True)
-            with patch.object(cfs, "orcacheck", return_value={"ties": [{"preset": "X"}], "recommendation": "Tie!"}):
+            with patch.object(cfs, "orcacheck", return_value={"ties": [{"preset": "X"}, {"preset": "Y"}], "recommendation": "Tie!"}):
                 with patch("builtins.input", side_effect=AssertionError("input() must not be called with --plan-only")):
                     result = cfs.cmd_add(mock_config, args)
     assert result is None

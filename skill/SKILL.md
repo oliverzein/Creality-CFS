@@ -42,12 +42,14 @@ Skill guides agent through CRUD workflow; `cfs.py` performs autonomous operation
    - **If reboot times out:** `cfs.py push` exits with code 6. Tell user to reboot manually, then run `cfs.py verify`.
 7. Run `cfs.py verify --id <id>` — confirms entry survived cloud sync
 8. **OrcaSlicer Preset** — generate standalone user preset:
-   - `orca.py preset <id> --plan-only` — shows preset name, filament_id, output path (safe, non-interactive)
+   - `orca.py preset <id> --plan-only` — shows preset name, filament_id, template, output path (safe, non-interactive)
    - Agent shows plan, user confirms via `ask_user_question`
-   - On confirm: `orca.py preset <id> --yes` — writes preset JSON + `.info` file (sync_info=create)
+   - **CRITICAL: OrcaSlicer must be STOPPED before writing preset** (Cloud-Sync would overwrite local file on startup)
+   - **CRITICAL: If preset exists in OrcaCloud, user must delete it first** (cloud.orcaslicer.com → Profiles → Delete). Otherwise OrcaSlicer loads old Cloud version on startup and overwrites local file.
+   - On confirm: `orca.py preset <id> --yes` — writes preset JSON + `.info` file (key=value format, sync_info empty)
+   - orca.py uses existing user preset as template (e.g. SUNLU PLA+) for full field set (131 fields). Falls back to system preset if no user preset of same type exists.
    - **Manual steps for user** (agent cannot do these):
-     - [ ] Start OrcaSlicer
-     - [ ] Sync Presets (pushes preset to Cloud via sync_info=create)
+     - [ ] Start OrcaSlicer (loads local preset, auto-sync pushes to Cloud if enabled)
      - [ ] Verify: `orca.py check <id>` — should show user preset as winner with score 30
      - [ ] On tie: disable competing presets in OrcaSlicer (right-click → Disable)
 9. Agent shows report + manual remaining checklist:
@@ -63,10 +65,12 @@ Skill guides agent through CRUD workflow; `cfs.py` performs autonomous operation
 5. Run `cfs.py push` — uploads + reboots (same busy-check flow as Add step 6)
 6. Run `cfs.py verify --id <id>` — confirms changes survived cloud sync
 7. Note: On color/ID change → rewrite tag
-8. **OrcaSlicer Preset update** (if name/brand/type changed):
+8. **OrcaSlicer Preset update** (if name/brand/type/values changed):
    - `orca.py preset <id> --force --plan-only` — shows updated preset plan
    - On confirm: `orca.py preset <id> --force --yes` — overwrites existing preset
-   - Manual: restart OrcaSlicer, Sync Presets, verify with `orca.py check <id>`
+   - **CRITICAL: OrcaSlicer must be STOPPED before writing** (see Add step 8)
+   - **CRITICAL: If preset exists in OrcaCloud, user must delete it first** (see Add step 8)
+   - Manual: start OrcaSlicer (auto-sync), verify with `orca.py check <id>`
 
 ### Delete
 1. `cfs.py list` → identify entry
@@ -89,18 +93,22 @@ Skill guides agent through CRUD workflow; `cfs.py` performs autonomous operation
 ### OrcaSlicer Preset (standalone)
 For cases where only a preset is needed (no DB change):
 1. Ensure DB cache is current: `cfs.py pull`
-2. `orca.py preset <id> --plan-only` → user confirms → `orca.py preset <id> --yes`
-3. Manual: start OrcaSlicer, Sync Presets, verify with `orca.py check <id>`
-4. `orca.py flatten` can also flatten an existing inherited preset manually
+2. **Stop OrcaSlicer** (Cloud-Sync would overwrite local file on startup)
+3. **If preset exists in OrcaCloud: user must delete it first** (cloud.orcaslicer.com → Profiles → Delete)
+4. `orca.py preset <id> --plan-only` → user confirms → `orca.py preset <id> --yes`
+5. Start OrcaSlicer (auto-sync pushes to Cloud if enabled)
+6. Verify with `orca.py check <id>`
+7. `orca.py flatten` can also flatten an existing inherited preset manually
 
 ## Critical Rules (Iron Rules)
 
 **Violating the letter of these rules is violating the spirit of these rules.**
 
-### Rule 1: Version=9876543210 + Reboot is MANDATORY after every DB write
+### Rule 1: Version >= 9876543210 + Reboot is MANDATORY after every DB write
 - Without it: cloud sync (`master-server`) overwrites DB within ~12 minutes
 - Verified 2026-06-29 (see Vault-Note)
-- `cfs.py push` does this automatically: busy check → version bump → SCP upload → reboot → wait
+- `cfs.py push` does this automatically: busy check → version bump (auto-increment from 9876543210) → SCP upload → reboot → wait
+- Auto-increment ensures CFS RFID app sees version change (`newVer > storedVer` comparison in app)
 - NEVER use `--no-version` on custom entries
 - NEVER use `--no-reboot` unless user explicitly accepts cloud-sync risk
 - `--force-reboot` kills active prints — only with explicit user confirmation
@@ -137,17 +145,30 @@ For cases where only a preset is needed (no DB change):
 | "name without vendor is fine" | OrcaSlicer tie. Validation warns. Ignoring = bug. |
 | "Quick one without backup" | `cfs.py` does backup automatically. NEVER skip. |
 | "I'll run add without flags to preview it" | Without `--yes`/`--plan-only`, the CLI's own y/n prompt crashes with EOFError in a non-interactive shell. Always use `--plan-only` to preview. |
+| "I'll write the OrcaSlicer preset while OrcaSlicer is running" | Cloud-Sync overwrites local file on next startup. Stop OrcaSlicer first. |
+| "I don't need to delete the Cloud preset" | OrcaSlicer loads Cloud version on startup, overwrites local file. Delete Cloud preset first. |
+| "System preset as template is fine" | Only 84 fields, OrcaSlicer crashes. Use existing user preset as template (131 fields). |
 
 ## Common Mistakes
 
 | Mistake | Consequence | Fix |
 |---|---|---|
-| Version not bumped | Cloud sync deletes entry after ~12 min | Version=9876543210 + Reboot (cfs.py does this) |
+| Version not bumped | Cloud sync deletes entry after ~12 min | Version >= 9876543210 + Reboot (cfs.py auto-increments) |
 | Version bumped, no reboot | Cloud sync deletes anyway | Reboot is mandatory (cfs.py does this) |
+| Version constant (no increment) | CFS RFID app shows "no update available" (app compares `newVer > storedVer`) | cfs.py auto-increments version on every push |
 | name without vendor | OrcaSlicer matches wrong preset | name = "Vendor ProductName" |
 | Running add/edit/delete without `--yes` or `--plan-only` | CLI blocks on `input()`, crashes with EOFError in a non-interactive shell | Use `--plan-only` to preview, `--yes` to apply |
 | OrcaSlicer preset not installed | Fallback to Generic | Install preset or accept Generic |
 | Tag ID ≠ DB ID | Spool not recognized | Tag = `1` + DB ID (app does this automatically) |
+| Writing OrcaSlicer preset while OrcaSlicer running | Cloud-Sync overwrites local file with old Cloud version on next startup | Stop OrcaSlicer before writing preset |
+| Preset exists in OrcaCloud, not deleted before writing | OrcaSlicer loads old Cloud version on startup, overwrites local file | Delete Cloud preset first (cloud.orcaslicer.com → Profiles → Delete) |
+| Using system preset as template (e.g. Chuanying Generic HS PLA) | Only 84 fields, OrcaSlicer crashes on missing fields | orca.py prefers existing user preset as template (131 fields) |
+| filament_vendor / filament_type as string | OrcaSlicer crash (expects arrays) | orca.py sets `["CAILAB"]` not `"CAILAB"` |
+| `type: "filament"` field in user preset | OrcaSlicer crash (user presets don't have type field) | orca.py removes `type` field |
+| `default_filament_colour: "#FFFFFF"` | White rectangle icon in OrcaSlicer | orca.py sets `[""]` (empty) for non-hex color names |
+| `inherits` field set to system preset name | Preset hidden as variant of system preset | orca.py sets `inherits: ""` and skips it in kvParam override |
+| filament_id collision with old Cloud preset | OrcaSlicer crashes on click (cached reference to deleted Cloud preset) | orca.py generates filament_id from name + DB id (unique per entry) |
+| `filament/base/` directory exists | OrcaSlicer loads from base/ (old values) on ID collision | Delete base/ files, delete Cloud preset, regenerate |
 
 ## Reference
 - Vault-Note: `projects/homeassistant/k2-rfid-custom-filament.md` (complete technical details)
