@@ -21,6 +21,8 @@ import sys
 import time
 from pathlib import Path
 
+from preset_utils import SYS_PROFILES, find_preset_by_name, flatten_preset
+
 EXIT_OK = 0
 EXIT_CONFIG = 1
 EXIT_ORCA = 2
@@ -30,7 +32,6 @@ EXIT_VALIDATE = 5
 EXIT_ABORT = 9
 
 ORCA_CONFIG_DIR = Path(os.path.expanduser("~/.config/OrcaSlicer"))
-SYS_PROFILES = Path("/opt/orca-slicer/resources/profiles")
 DB_CACHE = Path("/tmp/cfs-db.json")
 
 
@@ -120,25 +121,6 @@ def find_system_preset(filament_type, hint_name=None):
         return base[0]
     return candidates[0]
 
-
-def find_preset_by_name(name, hint_dir=None):
-    """Find a preset JSON by name. Prefer hint_dir, then system profiles."""
-    if not name:
-        return None
-    candidates = []
-    if hint_dir:
-        p = hint_dir / f"{name}.json"
-        if p.exists():
-            candidates.append(p)
-    base_dir = SYS_PROFILES / "OrcaFilamentLibrary" / "filament" / "base"
-    if base_dir.exists():
-        p = base_dir / f"{name}.json"
-        if p.exists() and p not in candidates:
-            candidates.append(p)
-    for p in SYS_PROFILES.rglob(f"{name}.json"):
-        if p not in candidates:
-            candidates.append(p)
-    return candidates[0] if candidates else None
 
 
 def write_info_file(preset_path, sync_info="create", setting_id="", base_id=""):
@@ -481,33 +463,6 @@ def cmd_check(args):
     if args.json:
         print(json.dumps(result, indent=2))
 
-
-# === Flatten ===
-
-def flatten_preset(path, _seen=None):
-    """Recursively flatten a preset: parent fields as base, child overrides on top."""
-    if _seen is None:
-        _seen = set()
-    data = json.loads(Path(path).read_text())
-    parent_name = data.get("inherits", "").strip()
-    hint = Path(path).parent
-    if parent_name and parent_name not in _seen:
-        _seen.add(parent_name)
-        parent_path = find_preset_by_name(parent_name, hint_dir=hint)
-        if parent_path:
-            parent_flat = flatten_preset(parent_path, _seen)
-            merged = copy.deepcopy(parent_flat)
-            for k, v in data.items():
-                if k in ("inherits", "setting_id", "instantiation"):
-                    continue
-                merged[k] = copy.deepcopy(v)
-            return merged
-        else:
-            print(f"WARN: parent '{parent_name}' not found", file=sys.stderr)
-    data.pop("inherits", None)
-    data.pop("setting_id", None)
-    data.pop("instantiation", None)
-    return data
 
 
 def cmd_flatten(args):
