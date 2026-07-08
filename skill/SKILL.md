@@ -100,6 +100,22 @@ For cases where only a preset is needed (no DB change):
 6. Verify with `orca.py check <id>`
 7. `orca.py flatten` can also flatten an existing inherited preset manually
 
+### import-orca (OrcaSlicer Preset → Drucker-DB)
+Importiert ein bestehendes OrcaSlicer-Filamentpreset direkt in die Drucker-DB:
+1. **Stop OrcaSlicer** (Cloud-Sync würde lokale Datei beim Flatten-Back überschreiben)
+2. `cfs.py import-orca <preset.json> --brand "<Vendor>" --plan-only` — zeigt Konvertierung + Flatten-Status
+3. User bestätigt via `ask_user_question`
+4. `cfs.py import-orca <preset.json> --brand "<Vendor>" --yes` — speichert lokal, flattet Preset zu standalone, pusht zum Drucker, verifiziert
+5. `--no-push` für lokalen Test ohne Drucker-Push
+6. `--no-flatten` überspringt Flatten-Back (nicht empfohlen — inherited Presets funktionieren nicht im Drucker)
+7. Start OrcaSlicer → lädt standalone Preset → pusht neu zur Cloud
+8. Verify: `orca.py check <id>` — sollte neues Preset als Winner zeigen
+
+**CRITICAL — .info-Datei beim Flatten-Back:**
+- `import-orca` leert automatisch `setting_id` und `sync_info` in der `.info`-Datei
+- Grund: OrcaSlicer Cloud-Sync sucht die `setting_id` in der Cloud. Wird sie nicht gefunden, löscht OrcaSlicer die lokale Datei ("in Cloud gelöscht" Interpretation)
+- Mit leerer `setting_id` behandelt OrcaSlicer das Preset als neu und pusht es frisch zur Cloud
+
 ## Critical Rules (Iron Rules)
 
 **Violating the letter of these rules is violating the spirit of these rules.**
@@ -132,6 +148,13 @@ For cases where only a preset is needed (no DB change):
 - `--confirm <id>` required + interactive "DELETE" input
 - Irreversible — tags become invalid
 
+### Rule 6: Push sanity check — refuse corrupt DBs
+- `push_local_db` refuses to push if DB has < 30 entries (`MIN_DB_ENTRIES`)
+- Stock DB has ~40 entries; anything below is suspicious (corruption, empty cache, test artifact)
+- `--force-push` overrides (DANGEROUS — overwrites printer DB with possibly corrupt data)
+- Learned 2026-07-08: corrupt cache with 2 entries was pushed, overwriting 44+ entry printer DB
+- NEVER use `--force-push` without verifying the DB content first
+
 ## Rationalization Table
 
 | Excuse | Reality |
@@ -145,6 +168,7 @@ For cases where only a preset is needed (no DB change):
 | "name without vendor is fine" | OrcaSlicer tie. Validation warns. Ignoring = bug. |
 | "Quick one without backup" | `cfs.py` does backup automatically. NEVER skip. |
 | "I'll run add without flags to preview it" | Without `--yes`/`--plan-only`, the CLI's own y/n prompt crashes with EOFError in a non-interactive shell. Always use `--plan-only` to preview. |
+| "DB has only 2 entries, push anyway" | REFUSE. Push sanity check blocks < 30 entries. Corrupt cache will overwrite printer DB. Use `--force-push` only after manual verification. |
 | "I'll write the OrcaSlicer preset while OrcaSlicer is running" | Cloud-Sync overwrites local file on next startup. Stop OrcaSlicer first. |
 | "I don't need to delete the Cloud preset" | OrcaSlicer loads Cloud version on startup, overwrites local file. Delete Cloud preset first. |
 | "System preset as template is fine" | Only 84 fields, OrcaSlicer crashes. Use existing user preset as template (131 fields). |
