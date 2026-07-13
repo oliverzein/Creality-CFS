@@ -441,17 +441,22 @@ def get_printer_status(config):
     return ws_request(config, "get", {})
 
 
+BUSY_STATES = {1, 2}  # 1=printing, 2=paused — only these block reboot
+# Known states: 0=idle, 1=printing, 2=paused, 3=completed?, 4=cancelled
+
+
 def check_printer_busy(config):
     """Check if printer is currently printing.
 
     Returns (busy: bool, info: dict) where info contains:
-      - state: printer state int (0=idle, 1=printing, 2=paused, etc.)
-      - printFileName: current print file (empty if idle)
-      - printProgress: 0-100
+      - state: printer state int (0=idle, 1=printing, 2=paused, 4=cancelled, etc.)
+      - printFileName: current print file (may be stale after cancel/complete)
+      - printProgress: 0-100 (may be stale after cancel/complete)
       - layer: current layer
       - totalLayer: total layers
 
-    Busy = printProgress > 0 OR non-empty printFileName.
+    Busy = state in BUSY_STATES (printing or paused).
+    Stale printFileName/printProgress after cancel/complete does NOT count as busy.
     """
     status = get_printer_status(config)
     info = {
@@ -461,7 +466,7 @@ def check_printer_busy(config):
         "layer": status.get("layer", 0),
         "totalLayer": status.get("TotalLayer", 0),
     }
-    busy = info["printProgress"] > 0 or bool(info["printFileName"])
+    busy = info["state"] in BUSY_STATES
     return busy, info
 
 
@@ -1003,6 +1008,9 @@ def push_local_db(config, no_version=False, no_reboot=False, force_reboot=False,
             print(f"  2. Use --force-reboot to push + reboot anyway (KILLS the active print)")
             print(f"  3. Use --no-reboot to push without reboot (cloud sync may overwrite — reboot manually later)")
             die(EXIT_BUSY, "Printer is busy — push refused for safety")
+
+    # Backup remote DB before overwriting (rotation: keep last 5)
+    ssh_backup(config)
 
     # Version bump + upload
     if not no_version:

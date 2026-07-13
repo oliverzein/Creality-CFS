@@ -85,8 +85,12 @@ def test_check_printer_busy_paused(mock_config):
     assert busy is True
 
 
-def test_check_printer_busy_filename_only(mock_config):
-    """Edge case: printProgress 0 but printFileName set (job loaded, not started)."""
+def test_check_printer_busy_stale_filename(mock_config):
+    """State idle + leftover printFileName (cancel/complete) is NOT busy.
+
+    Busy is state-only (BUSY_STATES={1,2}). Stale filename/progress after
+    cancel must not block reboot.
+    """
     status = {
         "state": 0,
         "printFileName": "/mnt/UDISK/printer_data/gcodes/loaded.gcode",
@@ -96,7 +100,8 @@ def test_check_printer_busy_filename_only(mock_config):
     }
     with patch("cfs.websocket.create_connection", return_value=_mock_ws(status)):
         busy, info = cfs.check_printer_busy(mock_config)
-    assert busy is True  # filename present = busy
+    assert busy is False
+    assert "loaded.gcode" in info["printFileName"]
 
 
 def test_check_printer_busy_ws_fail(mock_config):
