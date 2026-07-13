@@ -13,8 +13,8 @@ Printing "eSUN PETG Basic Optimized" (DB id 99002) via OrcaSlicer:
 |-----|-------------------------|-----------|---------|---------|----------------|
 | 99001 | Sunlu PLA+ Optimized  | 215       | 210     | 215     | max = Orca ✓   |
 | 99002 | eSUN PETG Basic Opt.   | 240       | 250     | 250     | max = DB ✗     |
-| 99003 | CAILAB PLA Silk        | 230       | 240     | ?       | max = DB (suspected) |
-| 99004 | Cailab PLA+ Bio        | 222       | 230     | ?       | max = DB (suspected) |
+| 99003 | CAILAB PLA Silk        | 230       | 240     | 230     | Orca wins ✓ (T2, confirmed 2026-07-13) |
+| 99004 | Cailab PLA+ Bio        | 222       | 230     | ?       | untested |
 
 ## Root cause (confirmed via firmware analysis 2026-07-13)
 
@@ -67,11 +67,40 @@ Line 136: T0                               ← SECOND override to DB temp (250)
 The second T0 (line 136) overrides the airbag M104 S240. After line 136, no more
 M104 commands follow → print continues at DB temp (250 before fix, 240 after).
 
-### Why Sunlu (99001) works with DB < Orca
+### Why Sunlu (99001, T1) and CAILAB Silk (99003, T2) work with DB ≠ Orca
 
-Sunlu is in slot 1 (T1, not T0). The G-Code pattern for T1 may not have a second
-T1 call after the airbag. Or the T1 handler behaves differently for same-slot
-reselection. Without Sunlu's G-Code, this is unconfirmed.
+**Confirmed 2026-07-13: The override is T0-specific.**
+
+CAILAB Silk test print (T2, DB=240, Orca=230) — WS polling during print start:
+```
+Step  0-3: target=0      (calibration, nozzle off)
+Step  4-5: target=180    (preheat)
+Step  6-8: target=140    (wait temp during homing)
+Step  9:   target=230    (Orca preset temp — START_PRINT EXTRUDER_TEMP=230)
+Step 10:   target=240    (DB override from T2 toolchange)
+Step 11-12: target=250   (spike — cause unknown, possibly flush temp)
+Step 13-14: target=240   (DB override again)
+Step 15:   target=230    (Orca temp wins! M104 from G-Code restores it)
+           progress=1%
+```
+
+Final print temp = **230** (Orca value). The DB override fired (steps 10, 13-14)
+but was subsequently overridden by the slicer's M104 command. This is the opposite
+of the eSUN (T0) case where the DB temp stuck.
+
+**Hypothesis: T0 has a second toolchange call in the G-Code (line 136) that fires
+AFTER the last M104. T1/T2 do not have this second call, so the slicer's M104
+restores the correct temp after the toolchange override.**
+
+This is consistent with the eSUN G-Code analysis:
+```
+Line 112: T0   ← first toolchange (override to DB temp)
+Line 113: M109 S240  ← slicer restores temp
+Line 134: M104 S240  ← "Airbag" restores temp again
+Line 136: T0   ← SECOND toolchange (override to DB temp, no M104 after)
+```
+
+For T1/T2, the second T-command is likely absent, so the last M104 wins.
 
 ### Firmware source locations (read-only, on printer)
 
@@ -87,7 +116,8 @@ reselection. Without Sunlu's G-Code, this is unconfirmed.
 DB entry 99002 `nozzle_temperature` 250 → 240 via `cfs.py edit 99002 --values '{"kvParam":{"nozzle_temperature":"240"}}' --yes` + push.
 Version bumped to 9876543215. Verified on printer.
 
-99003 + 99004 NOT fixed yet — pending root-cause analysis.
+99003 (CAILAB Silk) does NOT need fixing — Orca temp wins on T2.
+99004 (Cailab Bio) untested — likely safe if on T1/T2, at risk if on T0.
 
 ## Open questions
 
@@ -95,12 +125,14 @@ Version bumped to 9876543215. Verified on printer.
    - `get_material_max_extrusion_speed` exists → likely overrides `filament_max_volumetric_speed`
    - `SET_GCODE_VARIABLE ... VARIABLE=hotend_temp` → temp override confirmed
    - Need to check if PA / flow_ratio are also overridden during toolchange
-2. Why does Sunlu (T1, DB=210) apply Orca temp 215, not DB temp 210?
-   - Hypothesis: second T1 call not present in G-Code, or T1 handler skips same-slot
-   - Need to inspect Sunlu's generated G-Code
-3. Is there a config flag to disable DB temp override?
+2. Is the override truly T0-specific, or is it caused by the second T0 call in the G-Code?
+   - Test: put CAILAB Silk in T0 and print — if it prints at 240 (DB), confirms T0 issue
+   - Test: inspect OrcaSlicer G-Code for T1/T2 prints — check if second T-command is absent
+3. What causes the 250°C spike (step 11-12) during CAILAB print start?
+   - Higher than both Orca (230) and DB (240) — possibly flush temp or material change temp
+4. Is there a config flag to disable DB temp override?
    - No evidence found in gcode_macro.cfg or box_wrapper strings
-4. Would removing the second T0 from OrcaSlicer's filament_start_gcode fix it?
+5. Would removing the second T0 from OrcaSlicer's filament_start_gcode fix it?
    - The "Airbag" M104 S240 is between two T0 calls; removing the second T0 would
      let the airbag stick, but T0 is needed for tool activation
 
@@ -110,10 +142,13 @@ Version bumped to 9876543215. Verified on printer.
 - [x] Trace how `material_database.json` values reach the heater target
 - [x] Check if CFS/RFID module injects temp override into G-Code stream or Klipper config
 - [x] Document actual mechanism here
-- [ ] Decide: fix 99003/99004 same way, or find firmware-level fix
-- [ ] Investigate why Sunlu (T1) does NOT exhibit the same override
+- [x] Investigate why Sunlu (T1) and CAILAB (T2) do NOT exhibit the override
+- [ ] Confirm: is the override T0-specific or caused by second T0 in G-Code?
+- [ ] Test CAILAB Silk on T0 to confirm T0 is the trigger
+- [ ] Inspect OrcaSlicer G-Code for T1/T2 prints — verify no second T-command
 - [ ] Check if other kvParam fields (flow_ratio, PA, fan_speed) are also overridden
 - [ ] Consider: remove second T0 from OrcaSlicer filament_start_gcode as workaround
+- [ ] Test 99004 (Cailab Bio) — at risk only if placed on T0
 
 ## Related
 
