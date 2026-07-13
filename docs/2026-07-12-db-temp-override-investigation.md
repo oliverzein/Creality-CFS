@@ -13,8 +13,8 @@ Printing "eSUN PETG Basic Optimized" (DB id 99002) via OrcaSlicer:
 |-----|-------------------------|-----------|---------|---------|----------------|
 | 99001 | Sunlu PLA+ Optimized  | 215       | 210     | 215     | max = Orca ✓   |
 | 99002 | eSUN PETG Basic Opt.   | 240       | 250     | 250     | max = DB ✗     |
-| 99003 | CAILAB PLA Silk        | 230       | 240     | 230     | Orca wins ✓ (T2, confirmed 2026-07-13) |
-| 99004 | Cailab PLA+ Bio        | 222       | 230     | ?       | untested |
+| 99003 | CAILAB PLA Silk        | 230       | 240     | 230 on T2, 240 on T0 | T0 override confirmed 2026-07-13 |
+| 99004 | Cailab PLA+ Bio        | 222       | 230     | ?       | untested (at risk on T0) |
 
 ## Root cause (confirmed via firmware analysis 2026-07-13)
 
@@ -88,9 +88,26 @@ Final print temp = **230** (Orca value). The DB override fired (steps 10, 13-14)
 but was subsequently overridden by the slicer's M104 command. This is the opposite
 of the eSUN (T0) case where the DB temp stuck.
 
-**Hypothesis: T0 has a second toolchange call in the G-Code (line 136) that fires
-AFTER the last M104. T1/T2 do not have this second call, so the slicer's M104
-restores the correct temp after the toolchange override.**
+**Confirmed 2026-07-13: The override is T0-specific, not material-specific.**
+
+CAILAB Silk test on T0 (DB=240, Orca=230) — WS polling during print start:
+```
+Step  0-6:  target=0      (calibration, nozzle off)
+Step  7:    target=140    (preheat)
+Step  8-9:  target=170
+Step 10-12: target=140    (wait temp during homing)
+Step 13-14: target=230    (Orca preset temp — START_PRINT EXTRUDER_TEMP=230)
+Step 15-18: target=240    (DB override from T0 toolchange — STICKS)
+Step 19:    target=230    (slicer M104 restores briefly)
+Step 20:    target=240    (DB temp wins again, progress=3%)
+```
+
+Final print temp = **240** (DB value), not 230 (Orca). Same pattern as eSUN on T0.
+
+**Conclusion: Any custom filament in slot 0 with DB temp > Orca temp will print
+at the DB temp. The T0 G-Code structure (second T0 call after last M104) is the
+root cause. T1/T2 do not exhibit this because their G-Code lacks the second
+T-command, so the slicer's M104 restores the correct temp.**
 
 This is consistent with the eSUN G-Code analysis:
 ```
@@ -143,8 +160,8 @@ Version bumped to 9876543215. Verified on printer.
 - [x] Check if CFS/RFID module injects temp override into G-Code stream or Klipper config
 - [x] Document actual mechanism here
 - [x] Investigate why Sunlu (T1) and CAILAB (T2) do NOT exhibit the override
-- [ ] Confirm: is the override T0-specific or caused by second T0 in G-Code?
-- [ ] Test CAILAB Silk on T0 to confirm T0 is the trigger
+- [x] Confirm: is the override T0-specific or caused by second T0 in G-Code?
+- [x] Test CAILAB Silk on T0 to confirm T0 is the trigger
 - [ ] Inspect OrcaSlicer G-Code for T1/T2 prints — verify no second T-command
 - [ ] Check if other kvParam fields (flow_ratio, PA, fan_speed) are also overridden
 - [ ] Consider: remove second T0 from OrcaSlicer filament_start_gcode as workaround
