@@ -16,6 +16,7 @@ from pathlib import Path
 import requests
 import websocket
 from bs4 import BeautifulSoup
+from preset_utils import flatten_preset
 
 EXIT_OK = 0
 EXIT_CONFIG = 1
@@ -217,6 +218,59 @@ def build_entry(db, values):
     return entry
 
 
+# === Orca Import Helpers ===
+
+def _first(value):
+    """Return first element if value is a non-empty list/tuple, else value as-is."""
+    if isinstance(value, (list, tuple)) and value:
+        return value[0]
+    return value
+
+
+def convert_orca_to_db_values(flat_preset, overrides=None):
+    """Convert a flattened OrcaSlicer filament preset into cfs.py values dict."""
+    overrides = overrides or {}
+    values = {}
+
+    brand = overrides.get("brand") or _first(flat_preset.get("filament_vendor", ""))
+    if not brand:
+        die(EXIT_VALIDATE, "Orca preset has no filament_vendor and no --brand override given")
+    values["brand"] = brand
+
+    orca_name = overrides.get("name") or _first(flat_preset.get("name", ""))
+    if orca_name.lower().startswith(brand.lower()):
+        values["name"] = orca_name
+    else:
+        values["name"] = f"{brand} {orca_name}"
+
+    values["type"] = overrides.get("type") or _first(flat_preset.get("filament_type", ""))
+
+    range_low = flat_preset.get("nozzle_temperature_range_low")
+    range_high = flat_preset.get("nozzle_temperature_range_high")
+    if range_low is not None and range_high is not None:
+        values["minTemp"] = int(_first(range_low))
+        values["maxTemp"] = int(_first(range_high))
+    else:
+        nozzle_temp = flat_preset.get("nozzle_temperature")
+        if nozzle_temp is None:
+            die(EXIT_VALIDATE, "Orca preset has no nozzle_temperature/range")
+        temp = int(_first(nozzle_temp))
+        values["minTemp"] = temp
+        values["maxTemp"] = temp
+
+    density = flat_preset.get("filament_density")
+    if density is not None and density != "" and density != "nil":
+        values["density"] = float(_first(density))
+
+    color = flat_preset.get("default_filament_colour")
+    if color is not None:
+        c = _first(color)
+        if isinstance(c, str) and c.startswith("#") and len(c) in (4, 7):
+            values["color"] = c
+
+    return values
+
+
 # === Validation Section ===
 
 KNOWN_TYPES = {"PLA", "PETG", "ABS", "TPU", "PA", "PC", "ASA", "PVA", "HIPS", "PETG-CF", "PLA-CF"}
@@ -387,17 +441,22 @@ def get_printer_status(config):
     return ws_request(config, "get", {})
 
 
+BUSY_STATES = {1, 2}  # 1=printing, 2=paused — only these block reboot
+# Known states: 0=idle, 1=printing, 2=paused, 3=completed?, 4=cancelled
+
+
 def check_printer_busy(config):
     """Check if printer is currently printing.
 
     Returns (busy: bool, info: dict) where info contains:
-      - state: printer state int (0=idle, 1=printing, 2=paused, etc.)
-      - printFileName: current print file (empty if idle)
-      - printProgress: 0-100
+      - state: printer state int (0=idle, 1=printing, 2=paused, 4=cancelled, etc.)
+      - printFileName: current print file (may be stale after cancel/complete)
+      - printProgress: 0-100 (may be stale after cancel/complete)
       - layer: current layer
       - totalLayer: total layers
 
-    Busy = printProgress > 0 OR non-empty printFileName.
+    Busy = state in BUSY_STATES (printing or paused).
+    Stale printFileName/printProgress after cancel/complete does NOT count as busy.
     """
     status = get_printer_status(config)
     info = {
@@ -407,7 +466,7 @@ def check_printer_busy(config):
         "layer": status.get("layer", 0),
         "totalLayer": status.get("TotalLayer", 0),
     }
-    busy = info["printProgress"] > 0 or bool(info["printFileName"])
+    busy = info["state"] in BUSY_STATES
     return busy, info
 
 
@@ -558,12 +617,26 @@ def _cache_valid():
 
 def _get_cached_db(config):
     if _cache_valid():
-        return load_db(str(LOCAL_CACHE))
+        db = load_db(str(LOCAL_CACHE))
+        _warn_small_db(db, source="local cache")
+        return db
     # refresh
     scp_pull(config, str(LOCAL_CACHE))
     db = load_db(str(LOCAL_CACHE))
     _save_cache_meta(db)
+    _warn_small_db(db, source="printer")
     return db
+
+
+MIN_DB_ENTRIES = 30  # Stock DB has ~40 entries; anything below is suspicious
+
+
+def _warn_small_db(db, source="unknown"):
+    """Warn if DB has suspiciously few entries (possible corruption)."""
+    count = len(db.get("result", {}).get("list", []))
+    if count < MIN_DB_ENTRIES:
+        print(f"WARNING: DB from {source} has only {count} entries (expected >= {MIN_DB_ENTRIES}).", file=sys.stderr)
+        print(f"         This may indicate corruption. Verify before pushing.", file=sys.stderr)
 
 
 def cmd_add(config, args):
@@ -641,6 +714,166 @@ def cmd_add(config, args):
     return str(entry_id)
 
 
+def cmd_import_orca(config, args):
+    """Import a flattened OrcaSlicer filament preset into the printer DB."""
+    # 1. Load DB
+    db = _get_cached_db(config)
+
+    # 2. Load + flatten preset
+    preset_path = Path(args.preset)
+    if not preset_path.exists():
+        die(EXIT_VALIDATE, f"Preset file not found: {preset_path}")
+    flat = flatten_preset(preset_path)
+    original_data = json.loads(preset_path.read_text())
+    has_inherits = bool(original_data.get("inherits", "").strip())
+
+    # 3. Convert to values
+    overrides = {}
+    if args.brand:
+        overrides["brand"] = args.brand
+    if args.name:
+        overrides["name"] = args.name
+    if args.type:
+        overrides["type"] = args.type
+    values = convert_orca_to_db_values(flat, overrides)
+
+    # 4. Validate
+    errors, warnings = validate_entry(values)
+    if errors:
+        print("Validation errors:")
+        for e in errors:
+            print(f"  - {e}")
+        die(EXIT_VALIDATE, "Validation failed")
+    if warnings:
+        print("Warnings:")
+        for w in warnings:
+            print(f"  - {w}")
+
+    # 5. Determine ID
+    if args.id is not None:
+        entry_id = str(args.id)
+        if not _is_custom_id(entry_id):
+            die(EXIT_VALIDATE, f"Manual ID must be a custom ID (99xxx): {entry_id}")
+        values["id"] = entry_id
+    else:
+        values["id"] = next_free_id(db, config["id_range_start"])
+
+    # 6. Name collision check
+    target_name = values["name"].lower()
+    collision = next((e for e in find_custom_entries(db) if e["base"]["name"].lower() == target_name), None)
+    if collision is not None and not args.force:
+        die(EXIT_VALIDATE, f"Custom entry with name '{values['name']}' already exists (ID {collision['base']['id']}). Use --force to import anyway.")
+
+    # 7. OrcaSlicer tie check
+    orca_result = orcacheck(config, values)
+    ties = orca_result.get("ties", []) if isinstance(orca_result, dict) else []
+    if len(ties) > 1:
+        print(f"OrcaSlicer warning: {orca_result.get('recommendation', 'Tie detected')}")
+        if args.plan_only:
+            pass
+        elif args.yes:
+            print("Proceeding despite tie (--yes).")
+        else:
+            try:
+                resp = input("Proceed anyway? (y/n): ")
+            except EOFError:
+                die(EXIT_ABORT, "No --yes flag and no stdin available. Use --yes for non-interactive mode.")
+            if resp.lower() != "y":
+                die(EXIT_ABORT, "Aborted by user")
+
+    # 8. Plan only
+    if args.plan_only:
+        print(f"\nPlanned import:")
+        print(f"  ID:     {values['id']}")
+        print(f"  Brand:  {values['brand']}")
+        print(f"  Name:   {values['name']}")
+        print(f"  Type:   {values['type']}")
+        print(f"  Temp:   {values['minTemp']}-{values['maxTemp']}°C")
+        if "density" in values:
+            print(f"  Density: {values['density']}")
+        if "color" in values:
+            print(f"  Color:  {values['color']}")
+        if collision is not None:
+            print(f"  Force:  ignoring name collision with {collision['base']['id']}")
+        if has_inherits and not args.no_flatten:
+            parent_name = original_data.get("inherits", "").strip()
+            print(f"  Flatten: preset will be written back as standalone (removes inherits '{parent_name}')")
+            print(f"           WARNING: stop OrcaSlicer before applying — Cloud-Sync would overwrite")
+        elif has_inherits and args.no_flatten:
+            print(f"  Flatten: SKIPPED (--no-flatten) — preset remains inherited")
+        else:
+            print(f"  Flatten: already standalone")
+        print("\nDry run — no changes made. Re-run with --yes to apply.")
+        return None
+
+    # 9. Build entry + merge additional kvParam fields
+    entry = build_entry(db, values)
+    skip_keys = {
+        "inherits", "name", "filament_id", "filament_vendor", "filament_type",
+        "filament_settings_id", "setting_id", "instantiation", "type", "from",
+        "version", "_path", "_system",
+        "nozzle_temperature", "nozzle_temperature_range_low", "nozzle_temperature_range_high",
+    }
+    for k, v in flat.items():
+        if k in skip_keys:
+            continue
+        if v is None or v == "" or v == "nil":
+            continue
+        if isinstance(v, (list, tuple)) and v:
+            entry["kvParam"][k] = str(v[0])
+        else:
+            entry["kvParam"][k] = str(v)
+
+    # 10. Insert + save
+    insert_entry(db, entry)
+    save_db(str(LOCAL_CACHE), db)
+    entry_id = str(values["id"])
+    print(f"Entry {entry_id} imported (local).")
+
+    # 10b. Flatten OrcaSlicer preset back to standalone
+    if has_inherits and not args.no_flatten:
+        flat["inherits"] = ""
+        # Apply --brand override to preset's filament_vendor for consistency
+        if args.brand:
+            flat["filament_vendor"] = [args.brand]
+        preset_path.write_text(json.dumps(flat, indent="\t", ensure_ascii=False) + "\n")
+        parent_name = original_data.get("inherits", "").strip()
+        print(f"Preset flattened to standalone: {preset_path} (removed inherits '{parent_name}')")
+        if args.brand:
+            print(f"  filament_vendor set to '{args.brand}' (--brand override)")
+        # Clear setting_id in .info file — otherwise Cloud-Sync may delete the local
+        # file on next sync (Cloud searches for the old setting_id, finds nothing,
+        # treats it as "deleted in Cloud" → removes local file).
+        info_path = preset_path.with_suffix(".info")
+        if info_path.exists():
+            info_lines = info_path.read_text().splitlines()
+            patched = []
+            for line in info_lines:
+                if line.startswith("setting_id ="):
+                    patched.append("setting_id = ")
+                elif line.startswith("sync_info ="):
+                    patched.append("sync_info = ")
+                else:
+                    patched.append(line)
+            info_path.write_text("\n".join(patched) + "\n")
+            print(f"  .info: setting_id cleared (Cloud-Sync will treat as new preset)")
+        print(f"WARNING: OrcaSlicer must be STOPPED — Cloud-Sync would overwrite the file on startup.")
+    elif has_inherits and args.no_flatten:
+        print("Flatten skipped (--no-flatten). Preset remains inherited — orca.py check may not match.")
+
+    # 11. Push + verify
+    if not args.no_push:
+        push_local_db(config, no_version=False, no_reboot=False,
+                      force_reboot=getattr(args, "force_reboot", False),
+                      force_push=getattr(args, "force_push", False))
+        verify_args = argparse.Namespace(id=entry_id)
+        cmd_verify(config, verify_args)
+    else:
+        print("Push skipped (--no-push). Run 'push' and 'verify' manually.")
+
+    return entry_id
+
+
 def _interactive_collect():
     """Interactive prompt for filament values."""
     print("Interactive input (empty = default/optional):")
@@ -678,6 +911,10 @@ def cmd_edit(config, args):
             changes = json.loads(args.values)
         except json.JSONDecodeError as e:
             die(EXIT_VALIDATE, f"--values JSON parse error: {e}")
+        # --values uses flat keys (name, brand, minTemp...) — wrap in {"base": ...}
+        # unless already nested ({"base": ..., "kvParam": ...})
+        if "base" not in changes and "kvParam" not in changes:
+            changes = {"base": changes}
     elif args.interactive:
         changes = _interactive_edit(config, args.id)
     else:
@@ -740,16 +977,23 @@ def _interactive_edit(config, entry_id):
     return changes
 
 
-def cmd_push(config, args):
+def push_local_db(config, no_version=False, no_reboot=False, force_reboot=False, force_push=False):
     """Push local DB to printer: busy check, version bump, SCP upload, reboot."""
     if not LOCAL_CACHE.exists():
         die(EXIT_DB, f"Local cache not found: {LOCAL_CACHE}. Run 'pull' first.")
     db = load_db(str(LOCAL_CACHE))
 
+    # Sanity check — refuse to push a suspiciously small DB (prevents corruption overwrite)
+    count = len(db.get("result", {}).get("list", []))
+    if count < MIN_DB_ENTRIES and not force_push:
+        die(EXIT_VALIDATE,
+            f"REFUSING to push: DB has only {count} entries (expected >= {MIN_DB_ENTRIES}). "
+            f"This looks corrupt. Use --force-push to override (DANGEROUS — overwrites printer DB).")
+
     # Busy check BEFORE upload — no point uploading if we can't reboot to protect it
-    if not getattr(args, "no_reboot", False):
+    if not no_reboot:
         busy, info = check_printer_busy(config)
-        if busy and not getattr(args, "force_reboot", False):
+        if busy and not force_reboot:
             fname = info["printFileName"] or "(unknown)"
             if "/" in fname:
                 fname = fname.rsplit("/", 1)[-1]
@@ -765,8 +1009,11 @@ def cmd_push(config, args):
             print(f"  3. Use --no-reboot to push without reboot (cloud sync may overwrite — reboot manually later)")
             die(EXIT_BUSY, "Printer is busy — push refused for safety")
 
+    # Backup remote DB before overwriting (rotation: keep last 5)
+    ssh_backup(config)
+
     # Version bump + upload
-    if not getattr(args, "no_version", False):
+    if not no_version:
         bump_version(db, config["version_override"])
         save_db(str(LOCAL_CACHE), db)
     scp_push(config, str(LOCAL_CACHE))
@@ -776,10 +1023,10 @@ def cmd_push(config, args):
     # SCP returns when transfer is complete, but printer OS may still write to flash
     time.sleep(3)
 
-    if getattr(args, "no_reboot", False):
+    if no_reboot:
         print("WARNING: --no-reboot set. Cloud sync may overwrite the DB within ~12 minutes.")
         print("Reboot manually: sshpass -p '<password>' ssh root@<ip> 'sync; sync; reboot'")
-        return
+        return db
 
     # Reboot + wait
     print("Rebooting printer...")
@@ -788,6 +1035,18 @@ def cmd_push(config, args):
     if not wait_for_reboot(config):
         die(EXIT_REBOOT, "Printer did not come back online within 300s. Reboot manually and run 'verify'.")
     print("Printer back online.")
+    return db
+
+
+def cmd_push(config, args):
+    """CLI wrapper around push_local_db."""
+    db = push_local_db(
+        config,
+        no_version=getattr(args, "no_version", False),
+        no_reboot=getattr(args, "no_reboot", False),
+        force_reboot=getattr(args, "force_reboot", False),
+        force_push=getattr(args, "force_push", False),
+    )
     print(f"DB push complete: {db['result']['count']} entries, version {db['result']['version']}")
     print("Run 'cfs.py verify' to confirm entries survived cloud sync.")
 
@@ -857,6 +1116,8 @@ def main():
     push_p.add_argument("--no-version", action="store_true", help="Skip version bump (dangerous)")
     push_p.add_argument("--no-reboot", action="store_true", help="Skip reboot (dangerous — cloud sync will overwrite)")
     push_p.add_argument("--force-reboot", action="store_true", help="Reboot even if printer is busy (kills active print)")
+    push_p.add_argument("--force-push", action="store_true", dest="force_push",
+                        help="Push even if DB has < 30 entries (DANGEROUS — overwrites printer DB with possibly corrupt data)")
     list_p = sub.add_parser("list", help="Show custom entries")
     list_p.add_argument("--all", action="store_true")
     verify_p = sub.add_parser("verify", help="Pull DB from printer and check entries/version")
@@ -876,6 +1137,24 @@ def main():
     add_p.add_argument("--plan-only", action="store_true", dest="plan_only",
                         help="Show the plan and exit without prompting or making changes (safe for non-interactive use)")
     add_p.add_argument("--config")
+    import_p = sub.add_parser("import-orca", help="Import an OrcaSlicer filament preset into the printer DB")
+    import_p.add_argument("preset", help="Path to OrcaSlicer filament preset JSON")
+    import_p.add_argument("--brand")
+    import_p.add_argument("--name")
+    import_p.add_argument("--type")
+    import_p.add_argument("--id", type=int, default=None)
+    import_p.add_argument("--force", action="store_true", help="Import even if name collides with an existing custom entry")
+    import_p.add_argument("--plan-only", action="store_true", dest="plan_only",
+                           help="Show the plan and exit without prompting or making changes (safe for non-interactive use)")
+    import_p.add_argument("--yes", action="store_true", help="Skip confirmation prompts")
+    import_p.add_argument("--no-push", action="store_true", help="Skip pushing to printer")
+    import_p.add_argument("--no-flatten", action="store_true", dest="no_flatten",
+                           help="Skip flattening the OrcaSlicer preset back to standalone (not recommended)")
+    import_p.add_argument("--force-reboot", action="store_true", dest="force_reboot",
+                           help="Reboot even if printer is busy (kills active print)")
+    import_p.add_argument("--force-push", action="store_true", dest="force_push",
+                           help="Push even if DB has < 30 entries (DANGEROUS)")
+    import_p.add_argument("--config")
     edit_p = sub.add_parser("edit", help="Edit entry")
     edit_p.add_argument("id")
     edit_p.add_argument("--values")
@@ -954,6 +1233,9 @@ def main():
     elif args.command == "delete":
         config = load_config(args.config) if getattr(args, "config", None) else load_config()
         cmd_delete(config, args)
+    elif args.command == "import-orca":
+        config = load_config(args.config) if getattr(args, "config", None) else load_config()
+        cmd_import_orca(config, args)
 
     sys.exit(EXIT_OK)
 

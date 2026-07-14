@@ -17,9 +17,12 @@ import copy
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
+
+from preset_utils import SYS_PROFILES, find_preset_by_name, flatten_preset
 
 EXIT_OK = 0
 EXIT_CONFIG = 1
@@ -27,11 +30,14 @@ EXIT_ORCA = 2
 EXIT_EXISTS = 3
 EXIT_NO_SYSTEM = 4
 EXIT_VALIDATE = 5
+EXIT_NO_MATCHES = 3
+EXIT_PUSH_FAILED = 4
+EXIT_VERIFY_FAILED = 5
 EXIT_ABORT = 9
 
 ORCA_CONFIG_DIR = Path(os.path.expanduser("~/.config/OrcaSlicer"))
-SYS_PROFILES = Path("/opt/orca-slicer/resources/profiles")
 DB_CACHE = Path("/tmp/cfs-db.json")
+CFS_PATH = Path(__file__).with_name("cfs.py")
 
 
 def die(code, msg):
@@ -120,25 +126,6 @@ def find_system_preset(filament_type, hint_name=None):
         return base[0]
     return candidates[0]
 
-
-def find_preset_by_name(name, hint_dir=None):
-    """Find a preset JSON by name. Prefer hint_dir, then system profiles."""
-    if not name:
-        return None
-    candidates = []
-    if hint_dir:
-        p = hint_dir / f"{name}.json"
-        if p.exists():
-            candidates.append(p)
-    base_dir = SYS_PROFILES / "OrcaFilamentLibrary" / "filament" / "base"
-    if base_dir.exists():
-        p = base_dir / f"{name}.json"
-        if p.exists() and p not in candidates:
-            candidates.append(p)
-    for p in SYS_PROFILES.rglob(f"{name}.json"):
-        if p not in candidates:
-            candidates.append(p)
-    return candidates[0] if candidates else None
 
 
 def write_info_file(preset_path, sync_info="create", setting_id="", base_id=""):
@@ -482,33 +469,6 @@ def cmd_check(args):
         print(json.dumps(result, indent=2))
 
 
-# === Flatten ===
-
-def flatten_preset(path, _seen=None):
-    """Recursively flatten a preset: parent fields as base, child overrides on top."""
-    if _seen is None:
-        _seen = set()
-    data = json.loads(Path(path).read_text())
-    parent_name = data.get("inherits", "").strip()
-    hint = Path(path).parent
-    if parent_name and parent_name not in _seen:
-        _seen.add(parent_name)
-        parent_path = find_preset_by_name(parent_name, hint_dir=hint)
-        if parent_path:
-            parent_flat = flatten_preset(parent_path, _seen)
-            merged = copy.deepcopy(parent_flat)
-            for k, v in data.items():
-                if k in ("inherits", "setting_id", "instantiation"):
-                    continue
-                merged[k] = copy.deepcopy(v)
-            return merged
-        else:
-            print(f"WARN: parent '{parent_name}' not found", file=sys.stderr)
-    data.pop("inherits", None)
-    data.pop("setting_id", None)
-    data.pop("instantiation", None)
-    return data
-
 
 def cmd_flatten(args):
     user_path = Path(args.input)
@@ -545,6 +505,257 @@ def cmd_flatten(args):
     print(f"OK: wrote {out_path} ({len(flat)} fields, filament_id={args.filament_id})", file=sys.stderr)
 
 
+# === Sync (OrcaSlicer Preset → Printer DB) ===
+
+
+def is_orcaslicer_running():
+    """Check if an OrcaSlicer process is currently running."""
+    names = ("OrcaSlicer", "orca-slicer", "orca-slicer.AppImage")
+    try:
+        import psutil
+        for proc in psutil.process_iter(["name"]):
+            try:
+                if proc.info["name"] in names:
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return False
+    except ImportError:
+        pass
+    for name in names:
+        try:
+            result = subprocess.run(["pgrep", "-x", name], capture_output=True, text=True)
+            if result.returncode == 0:
+                return True
+        except FileNotFoundError:
+            continue
+    return False
+
+
+def get_preset_temp(preset, key, default=None):
+    """Return preset[key] as int, or default if missing/non-numeric.
+
+    Preset fields are arrays of strings; return first element.
+    """
+    value = preset.get(key, default)
+    if isinstance(value, (list, tuple)) and value:
+        value = value[0]
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
+
+def run_cfs(argv, args=None, check=True):
+    """Run cfs.py with the given subcommand and arguments."""
+    cmd = [sys.executable, str(CFS_PATH)]
+    if args and getattr(args, "config", None):
+        cmd.extend(["--config", args.config])
+    cmd.extend(argv)
+    if args and argv and argv[0] == "push":
+        if getattr(args, "force_reboot", False):
+            cmd.append("--force-reboot")
+        if getattr(args, "no_reboot", False):
+            cmd.append("--no-reboot")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0 and check:
+        die(EXIT_PUSH_FAILED, f"cfs.py {' '.join(argv)} failed: {result.stderr.strip() or result.stdout.strip()}")
+    return result
+
+
+def _verify_ok(result, entry_id):
+    """Check cfs.py verify output for a successful cloud-sync verification."""
+    if result.returncode != 0:
+        return False
+    text = result.stdout
+    if f"Entry {entry_id}: MISSING" in text:
+        return False
+    if "MISMATCH (cloud sync may have overwritten)" in text:
+        return False
+    return True
+
+
+def find_sync_targets(db, presets, entry_ids=None):
+    """Return a list of target/skip dicts for all custom 99xxx entries."""
+    results = []
+    for e in db["result"]["list"]:
+        b = e.get("base", {})
+        eid = b.get("id", "")
+        if not eid.startswith("99"):
+            continue
+        if entry_ids is not None and eid not in entry_ids:
+            continue
+        brand = b.get("brand", "")
+        name = b.get("name", "")
+        ftype = b.get("meterialType", "")
+        matches, _ = match_presets(presets, brand, name, ftype)
+        if not matches:
+            results.append({"entry": e, "status": "no_match", "message": f"no preset matches DB entry {eid}"})
+            continue
+        top = matches[0]
+        top_score = top["score"]
+        ties = [m for m in matches if m["score"] == top_score]
+        if len(ties) > 1:
+            results.append({"entry": e, "status": "tie", "message": f"ambiguous match — resolve in OrcaSlicer first"})
+            continue
+        if top["system"]:
+            results.append({"entry": e, "status": "system", "message": f"no user preset — run `orca.py preset {eid}` first"})
+            continue
+        if top_score < 30:
+            results.append({"entry": e, "status": "no_match", "message": f"no strong match for DB entry {eid}"})
+            continue
+        top_preset = next((p for p in presets if p.get("_path") == top["path"]), None)
+        if top_preset is None:
+            results.append({"entry": e, "status": "no_match", "message": f"matched preset not found: {top['name']}"})
+            continue
+        db_temp = e.get("kvParam", {}).get("nozzle_temperature")
+        if db_temp is None:
+            results.append({"entry": e, "status": "missing_temp", "message": f"DB entry {eid} missing kvParam.nozzle_temperature"})
+            continue
+        try:
+            db_temp_int = int(db_temp)
+        except (ValueError, TypeError):
+            results.append({"entry": e, "status": "missing_temp", "message": f"DB entry {eid} has non-numeric nozzle_temperature"})
+            continue
+        orca_temp = get_preset_temp(top_preset, "nozzle_temperature")
+        if orca_temp is None:
+            results.append({"entry": e, "status": "missing_temp", "message": f"matched preset missing nozzle_temperature"})
+            continue
+        orca_initial_temp = get_preset_temp(top_preset, "nozzle_temperature_initial_layer", default=orca_temp)
+        results.append({
+            "entry": e,
+            "status": "target",
+            "preset": top_preset,
+            "db_temp": db_temp_int,
+            "orca_temp": orca_temp,
+            "initial_warning": orca_initial_temp != orca_temp,
+            "initial_temp": orca_initial_temp,
+        })
+    return results
+
+
+def _format_row(row, widths):
+    """Format a table row with computed column widths."""
+    return "  ".join(f"{str(v):{w}}" for v, w in zip(row, widths))
+
+
+def _print_report(rows, skipped, to_update, updated=None, failed=None):
+    """Print sync report table and final summary."""
+    headers = ["ID", "DB name", "Preset name", "DB temp", "Orca temp", "Status"]
+    widths = [len(h) for h in headers]
+    for row in rows:
+        widths = [max(w, len(str(v))) for w, v in zip(widths, row[:6])]
+    print(_format_row(headers, widths))
+    for row in rows:
+        print(_format_row(row[:6], widths))
+        warning = row[6]
+        if warning:
+            pad = sum(widths) + (len(widths) - 1) * 2
+            print(f"{'':{pad}}  {warning}")
+    for item in skipped:
+        eid = item["entry"]["base"]["id"]
+        print(f"  {eid}: {item['status']} — {item['message']}")
+    if failed is not None:
+        print(f"\nSynced {len(updated) - len(failed)}/{len(to_update)} entries:")
+        for r in to_update:
+            eid = r["entry"]["base"]["id"]
+            db_name = r["entry"]["base"]["name"]
+            db_temp = r["db_temp"]
+            orca_temp = r["orca_temp"]
+            status = "✗ failed" if eid in failed else "✓ verified"
+            print(f"  {eid} {db_name}: {db_temp} → {orca_temp}  {status}")
+    elif rows:
+        print(f"\n{len(to_update)} mismatches found. Use --yes to apply changes.")
+
+
+def cmd_sync(args):
+    """Sync kvParam.nozzle_temperature from OrcaSlicer presets to the printer DB."""
+    if is_orcaslicer_running():
+        die(EXIT_ORCA, "Stop OrcaSlicer first (Cloud-Sync risk)")
+
+    # Load state
+    presets = load_presets(args.config_dir)
+    if not args.db_cache:
+        run_cfs(["pull"], args)
+        db = load_db_from_cache()
+    else:
+        db = load_db_from_cache(args.db_cache)
+
+    entry_ids = set(args.id) if args.id else None
+    results = find_sync_targets(db, presets, entry_ids)
+
+    rows = []
+    skipped = []
+    to_update = []
+    for r in results:
+        if r["status"] != "target":
+            skipped.append(r)
+            continue
+        e = r["entry"]
+        p = r["preset"]
+        eid = e["base"]["id"]
+        db_name = e["base"]["name"]
+        preset_name = p["name"]
+        db_temp = r["db_temp"]
+        orca_temp = r["orca_temp"]
+        if db_temp == orca_temp:
+            status = "OK"
+            warning = ""
+        else:
+            status = f"MISMATCH (will update {db_temp}→{orca_temp})"
+            warning = f"⚠ initial_layer={r['initial_temp']} ≠ nozzle={orca_temp}" if r["initial_warning"] else ""
+            to_update.append(r)
+        rows.append((eid, db_name, preset_name, db_temp, orca_temp, status, warning))
+
+    if not rows:
+        if skipped:
+            for item in skipped:
+                print(f"{item['entry']['base']['id']}: {item['message']}")
+        die(EXIT_NO_MATCHES, "No entries to sync")
+
+    if args.dry_run:
+        _print_report(rows, skipped, to_update)
+        return
+
+    if not to_update:
+        _print_report(rows, skipped, to_update)
+        return
+
+    # Confirm
+    if not args.yes:
+        try:
+            answer = input(f"Update {len(to_update)} entries? [y/N] ")
+        except EOFError:
+            die(EXIT_ABORT, "No --yes flag and no stdin available. Use --yes for non-interactive mode.")
+        if answer.lower() != "y":
+            die(EXIT_ABORT, "Aborted by user")
+
+    # Apply edits
+    updated_ids = []
+    for r in to_update:
+        eid = r["entry"]["base"]["id"]
+        orca_temp = r["orca_temp"]
+        values = json.dumps({"kvParam": {"nozzle_temperature": str(orca_temp)}})
+        run_cfs(["edit", eid, "--values", values, "--yes"], args)
+        updated_ids.append(eid)
+
+    # Push
+    run_cfs(["push"], args)
+
+    # Verify
+    failed_ids = []
+    for eid in updated_ids:
+        result = run_cfs(["verify", "--id", eid], args, check=False)
+        if not _verify_ok(result, eid):
+            failed_ids.append(eid)
+
+    _print_report(rows, skipped, to_update, updated_ids, failed_ids)
+    if failed_ids:
+        die(EXIT_VERIFY_FAILED, "Some entries did not survive cloud sync")
+
+
 # === Main ===
 
 def main():
@@ -578,6 +789,17 @@ def main():
     flatten_p.add_argument("filament_id", help="Unique filament_id (e.g. P959e9ac23c0d80)")
     flatten_p.add_argument("output", nargs="?", default=None, help="Output path (default: overwrite input)")
 
+    # sync
+    sync_p = sub.add_parser("sync", help="Sync nozzle_temperature from OrcaSlicer presets to printer DB")
+    sync_p.add_argument("--id", nargs="*", default=None, help="Sync only these 99xxx IDs (default: all)")
+    sync_p.add_argument("--dry-run", action="store_true", help="Show plan and exit without writing")
+    sync_p.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
+    sync_p.add_argument("--db-cache", default=None, help="Path to cfs.py DB cache (default: /tmp/cfs-db.json)")
+    sync_p.add_argument("--config-dir", default=None, help="OrcaSlicer config directory (default: ~/.config/OrcaSlicer)")
+    sync_p.add_argument("--config", default=None, help="Path to cfs.py config (default: ~/.config/devin/creality-k2.json)")
+    sync_p.add_argument("--force-reboot", action="store_true", help="Reboot even if printer is busy")
+    sync_p.add_argument("--no-reboot", action="store_true", help="Push without rebooting")
+
     args = parser.parse_args()
 
     if args.command == "preset":
@@ -586,6 +808,8 @@ def main():
         cmd_check(args)
     elif args.command == "flatten":
         cmd_flatten(args)
+    elif args.command == "sync":
+        cmd_sync(args)
 
     sys.exit(EXIT_OK)
 
