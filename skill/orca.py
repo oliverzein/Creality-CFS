@@ -348,10 +348,12 @@ def load_presets(config_dir=None):
             d["_system"] = True
             d["_path"] = str(p)
             presets.append(d)
-    # User presets
-    user_root = base / "user"
-    if user_root.exists():
-        for p in user_root.rglob("filament/*.json"):
+    # User presets — use the first user profile with a filament/ subdir (mirrors
+    # find_orca_user_dir) and only direct .json files inside it. This avoids
+    # duplicates from multiple profiles and manual backup subdirs.
+    filament_dir = find_orca_user_dir(str(base))
+    if filament_dir and filament_dir.is_dir():
+        for p in filament_dir.glob("*.json"):
             try:
                 d = json.loads(p.read_text())
             except (json.JSONDecodeError, OSError):

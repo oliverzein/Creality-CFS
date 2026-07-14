@@ -92,6 +92,51 @@ class TestFindOrcaUserDir:
         assert result is None
 
 
+# === load_presets ===
+
+class TestLoadPresets:
+    def test_loads_user_preset_and_ignores_backup_subdir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(orca, "SYS_PROFILES", tmp_path / "sys_profiles")
+        orca_root = tmp_path / "OrcaSlicer"
+        user_dir = orca_root / "user" / "test-uuid" / "filament"
+        user_dir.mkdir(parents=True)
+        (user_dir / "Sunlu PLA+.json").write_text(json.dumps({
+            "name": "Sunlu PLA+",
+            "filament_type": ["PLA"],
+            "type": "filament",
+            "nozzle_temperature": ["220"],
+        }))
+        # backup subdir should not be scanned
+        backup_dir = user_dir / "backup_2026-07-09"
+        backup_dir.mkdir()
+        (backup_dir / "Sunlu PLA+.json").write_text(json.dumps({
+            "name": "Sunlu PLA+",
+            "filament_type": ["PLA"],
+            "type": "filament",
+            "nozzle_temperature": ["220"],
+        }))
+        presets = orca.load_presets(str(orca_root))
+        names = [p["name"] for p in presets]
+        assert names == ["Sunlu PLA+"]
+
+    def test_only_loads_first_user_profile(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(orca, "SYS_PROFILES", tmp_path / "sys_profiles")
+        orca_root = tmp_path / "OrcaSlicer"
+        for profile in ("default", "test-uuid"):
+            filament = orca_root / "user" / profile / "filament"
+            filament.mkdir(parents=True)
+            (filament / f"{profile}.json").write_text(json.dumps({
+                "name": profile,
+                "filament_type": ["PLA"],
+                "type": "filament",
+                "nozzle_temperature": ["220"],
+            }))
+        presets = orca.load_presets(str(orca_root))
+        names = [p["name"] for p in presets]
+        # default comes before test-uuid alphabetically, so only first profile is loaded
+        assert names == ["default"]
+
+
 # === build_standalone_preset ===
 
 class TestBuildStandalonePreset:
