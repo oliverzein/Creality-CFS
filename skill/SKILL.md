@@ -14,7 +14,8 @@ Skill guides agent through CRUD workflow; `cfs.py` performs autonomous operation
 - User wants to edit/delete a custom entry
 - User wants to verify DB status
 - User has OrcaSlicer filament matching issues
-- Trigger: "Filament tag", "Custom Filament", "CFS", "RFID", "Sunlu", "eSun", "K2 Filament"
+- User wants to sync `nozzle_temperature` from OrcaSlicer presets to printer DB (T0 override, "OrcaSlicer temp differs from DB")
+- Trigger: "Filament tag", "Custom Filament", "CFS", "RFID", "Sunlu", "eSun", "K2 Filament", "sync"
 
 ## Prerequisites
 - Python3, sshpass, ssh, scp installed
@@ -100,6 +101,31 @@ For cases where only a preset is needed (no DB change):
 6. Verify with `orca.py check <id>`
 7. `orca.py flatten` can also flatten an existing inherited preset manually
 
+### Sync (OrcaSlicer preset → printer DB)
+
+Use when the user wants to update `kvParam.nozzle_temperature` of custom 99xxx
+printer DB entries from the matching OrcaSlicer user presets. Typical triggers:
+- "T0 temperature override" / "DB temp differs from OrcaSlicer"
+- "sync nozzle temperature from OrcaSlicer to printer"
+- "sync OrcaSlicer presets to CFS"
+
+This is the reverse of the `preset` workflow: `preset` writes DB → OrcaSlicer;
+`sync` reads OrcaSlicer → DB. Only `nozzle_temperature` is synced; only
+99xxx custom entries; stock entries are never touched.
+
+1. Ensure config exists and DB cache is current
+2. **Stop OrcaSlicer** — `sync` refuses to run if it detects an OrcaSlicer process (Cloud-Sync risk)
+3. `orca.py sync --dry-run` — shows a table of `OK`/`MISMATCH` rows and any `initial_layer` warnings
+4. Agent shows plan, user confirms via `ask_user_question`
+5. On confirm: `orca.py sync --yes` — edits local DB, calls `cfs.py push` (backup + version bump + reboot + wait), then `cfs.py verify --id <id>` for each edited entry
+6. Same busy-check behavior as `cfs.py push`: if printer busy, `sync` exits 10 and offers `--force-reboot` or `--no-reboot`
+7. On success, the final report shows `✓ verified` for each entry
+
+**Important:**
+- Skipped entries are reported with reason: `no preset matches`, `ambiguous` (tie), `system` (no user preset), or `missing` `nozzle_temperature`
+- On a tie, the user must disable competing presets in OrcaSlicer or remove duplicate/old profile dirs before retrying
+- `sync` loads user presets from the first `OrcaSlicer/user/<UUID>/filament/` directory only (matches `find_orca_user_dir`). Backup subdirs and other profiles are ignored.
+
 ### import-orca (OrcaSlicer Preset → Drucker-DB)
 Importiert ein bestehendes OrcaSlicer-Filamentpreset direkt in die Drucker-DB:
 1. **Stop OrcaSlicer** (Cloud-Sync würde lokale Datei beim Flatten-Back überschreiben)
@@ -172,6 +198,7 @@ Importiert ein bestehendes OrcaSlicer-Filamentpreset direkt in die Drucker-DB:
 | "I'll write the OrcaSlicer preset while OrcaSlicer is running" | Cloud-Sync overwrites local file on next startup. Stop OrcaSlicer first. |
 | "I don't need to delete the Cloud preset" | OrcaSlicer loads Cloud version on startup, overwrites local file. Delete Cloud preset first. |
 | "System preset as template is fine" | Only 84 fields, OrcaSlicer crashes. Use existing user preset as template (131 fields). |
+| "Sync with --no-reboot is fine, I'll reboot later" | Cloud sync may overwrite the DB before manual reboot. Same rule as `cfs.py push`. |
 
 ## Common Mistakes
 
@@ -193,6 +220,11 @@ Importiert ein bestehendes OrcaSlicer-Filamentpreset direkt in die Drucker-DB:
 | `inherits` field set to system preset name | Preset hidden as variant of system preset | orca.py sets `inherits: ""` and skips it in kvParam override |
 | filament_id collision with old Cloud preset | OrcaSlicer crashes on click (cached reference to deleted Cloud preset) | orca.py generates filament_id from name + DB id (unique per entry) |
 | `filament/base/` directory exists | OrcaSlicer loads from base/ (old values) on ID collision | Delete base/ files, delete Cloud preset, regenerate |
+| `sync` while OrcaSlicer is running | `sync` detects process and aborts | Stop OrcaSlicer first |
+| `sync` with ambiguous preset match | `sync` skips tied entries with warning | Disable competing presets or remove duplicate/old profile dirs |
+| `sync` reports `no user preset` | Winner is a system preset | Run `orca.py preset <id>` first to create a user preset, then `sync` |
+| `sync` with `--no-reboot` | Cloud sync may overwrite the DB before manual reboot | Only use if user explicitly accepts the risk; reboot manually ASAP |
+| `sync` on stock 01xxx entries | `sync` only touches 99xxx custom entries | Edit stock entries not allowed; use `cfs.py edit` if absolutely needed |
 
 ## Reference
 - Vault-Note: `projects/homeassistant/k2-rfid-custom-filament.md` (complete technical details)
