@@ -65,7 +65,8 @@ Synchronize `kvParam.nozzle_temperature` from OrcaSlicer user presets back to
 matching custom 99xxx printer DB entries. This is the reverse of `preset`: it
 reads the authoritative temperature from the OrcaSlicer user preset and updates
 the printer DB. Only custom 99xxx entries are touched; stock entries are
-ignored. The command refuses to run if OrcaSlicer is detected.
+ignored. `--dry-run` can run while OrcaSlicer is running; the actual apply step
+refuses to run until OrcaSlicer is stopped (Cloud-Sync risk).
 
 Flow: pull DB → load presets → match → compare → report → apply edits → push
 (backup + reboot) → verify each edited entry. A mismatching

@@ -114,9 +114,9 @@ This is the reverse of the `preset` workflow: `preset` writes DB → OrcaSlicer;
 99xxx custom entries; stock entries are never touched.
 
 1. Ensure config exists and DB cache is current
-2. **Stop OrcaSlicer** — `sync` refuses to run if it detects an OrcaSlicer process (Cloud-Sync risk)
-3. `orca.py sync --dry-run` — shows a table of `OK`/`MISMATCH` rows and any `initial_layer` warnings
-4. Agent shows plan, user confirms via `ask_user_question`
+2. `orca.py sync --dry-run` — can run while OrcaSlicer is running; shows a table of `OK`/`MISMATCH` rows and any `initial_layer` warnings
+3. Agent shows plan, user confirms via `ask_user_question`
+4. **Stop OrcaSlicer** — `sync` refuses to apply if it detects an OrcaSlicer process (Cloud-Sync risk)
 5. On confirm: `orca.py sync --yes` — edits local DB, calls `cfs.py push` (backup + version bump + reboot + wait), then `cfs.py verify --id <id>` for each edited entry
 6. Same busy-check behavior as `cfs.py push`: if printer busy, `sync` exits 10 and offers `--force-reboot` or `--no-reboot`
 7. On success, the final report shows `✓ verified` for each entry
@@ -220,7 +220,7 @@ Importiert ein bestehendes OrcaSlicer-Filamentpreset direkt in die Drucker-DB:
 | `inherits` field set to system preset name | Preset hidden as variant of system preset | orca.py sets `inherits: ""` and skips it in kvParam override |
 | filament_id collision with old Cloud preset | OrcaSlicer crashes on click (cached reference to deleted Cloud preset) | orca.py generates filament_id from name + DB id (unique per entry) |
 | `filament/base/` directory exists | OrcaSlicer loads from base/ (old values) on ID collision | Delete base/ files, delete Cloud preset, regenerate |
-| `sync` while OrcaSlicer is running | `sync` detects process and aborts | Stop OrcaSlicer first |
+| `sync --yes` while OrcaSlicer is running | `sync` detects process and aborts | Stop OrcaSlicer first |
 | `sync` with ambiguous preset match | `sync` skips tied entries with warning | Disable competing presets or remove duplicate/old profile dirs |
 | `sync` reports `no user preset` | Winner is a system preset | Run `orca.py preset <id>` first to create a user preset, then `sync` |
 | `sync` with `--no-reboot` | Cloud sync may overwrite the DB before manual reboot | Only use if user explicitly accepts the risk; reboot manually ASAP |

@@ -674,7 +674,7 @@ def _print_report(rows, skipped, to_update, updated=None, failed=None):
 
 def cmd_sync(args):
     """Sync kvParam.nozzle_temperature from OrcaSlicer presets to the printer DB."""
-    if is_orcaslicer_running():
+    if not args.dry_run and is_orcaslicer_running():
         die(EXIT_ORCA, "Stop OrcaSlicer first (Cloud-Sync risk)")
 
     # Load state
