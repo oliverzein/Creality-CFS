@@ -111,14 +111,15 @@ class TestSyncApply:
             {"name": "Sunlu PLA+", "nozzle_temperature": ["220"]},
             dry_run=False,
         )
+        call_names = [c[0][0] for c in calls]
+        assert call_names == ["edit", "push", "verify"]
         edit_calls = [c for c in calls if c[0][0] == "edit"]
         push_calls = [c for c in calls if c[0][0] == "push"]
         verify_calls = [c for c in calls if c[0][0] == "verify"]
-        assert edit_calls
-        assert ["99001" in " ".join(c[0]) for c in edit_calls]
-        assert push_calls
-        assert verify_calls
-        assert '220' in edit_calls[0][0][3]
+        assert edit_calls[0][0] == ["edit", "99001", "--values", '{"kvParam": {"nozzle_temperature": "220"}}', "--yes"]
+        assert push_calls[0][1] is True  # checked: if cfs.py push fails, sync fails
+        assert verify_calls[0][0] == ["verify", "--id", "99001"]
+        assert verify_calls[0][1] is False
 
 
 class TestSyncSkips:
