@@ -59,6 +59,30 @@ deprecated `cfs.py orcacheck`.
 | `--json` | Emit the result as JSON (`matches`, `ties`, `winner`, `winner_filament_id`, `recommendation`) in addition to the human-readable report. |
 | `--db-cache PATH` | Path to the cfs.py DB cache (default `/tmp/cfs-db.json`). |
 
+### `sync [options]`
+
+Synchronize `kvParam.nozzle_temperature` from OrcaSlicer user presets back to
+matching custom 99xxx printer DB entries. This is the reverse of `preset`: it
+reads the authoritative temperature from the OrcaSlicer user preset and updates
+the printer DB. Only custom 99xxx entries are touched; stock entries are
+ignored. The command refuses to run if OrcaSlicer is detected.
+
+Flow: pull DB → load presets → match → compare → report → apply edits → push
+(backup + reboot) → verify each edited entry. A mismatching
+`nozzle_temperature_initial_layer` is reported as a warning but does not block
+the sync.
+
+| Option | Description |
+|---|---|
+| `--id ID [ID ...]` | Sync only the listed 99xxx IDs (default: all custom entries). |
+| `--dry-run` | Show the planned changes and exit without writing. |
+| `--yes` | Skip the `Update N entries? [y/N]` prompt and apply. |
+| `--force-reboot` | Reboot even if the printer is busy (kills active print). |
+| `--no-reboot` | Push without rebooting. **Warning:** cloud sync may overwrite the DB within ~12 minutes; reboot manually later. |
+| `--config-dir PATH` | Override the OrcaSlicer config directory (default `~/.config/OrcaSlicer`). |
+| `--config PATH` | Override the cfs.py config (default `~/.config/devin/creality-k2.json`). |
+| `--db-cache PATH` | Use this local DB cache instead of refreshing with `cfs.py pull`. |
+
 ### `flatten <input.json> <name> <filament_id> [output]`
 
 Flatten an inherited user preset into a standalone preset. Resolves the
@@ -95,9 +119,9 @@ None. OrcaSlicer config dir defaults to `~/.config/OrcaSlicer` (compiled in).
 | 0 | OK |
 | 1 | config error (DB cache missing/invalid) |
 | 2 | OrcaSlicer error (user dir not found) |
-| 3 | preset already exists (use `--force`) |
-| 4 | no system preset found (template discovery failed) |
-| 5 | validation error (entry not found, preset has no inherits) |
+| 3 | preset already exists (use `--force`) OR sync: no entries to sync (all skipped) |
+| 4 | no system preset found (template discovery failed) OR sync: `cfs.py push` failed |
+| 5 | validation error (entry not found, preset has no inherits) OR sync: `cfs.py verify` failed |
 | 9 | aborted by user |
 
 ## EXAMPLES
@@ -144,6 +168,24 @@ Manually flatten an inherited preset:
 orca.py flatten ~/PLA+.json "Sunlu PLA+" "P959e9ac23c0d80" ~/Sunlu_PLA+.json
 ```
 
+Preview sync for all custom entries:
+
+```sh
+orca.py sync --dry-run
+```
+
+Sync only one entry and apply:
+
+```sh
+orca.py sync --id 99001 --yes
+```
+
+Sync all mismatches without rebooting (reboot manually later):
+
+```sh
+orca.py sync --yes --no-reboot
+```
+
 ## CAVEATS
 
 - **OrcaSlicer must be STOPPED** before running `preset --yes`. Cloud-Sync
@@ -161,6 +203,12 @@ orca.py flatten ~/PLA+.json "Sunlu PLA+" "P959e9ac23c0d80" ~/Sunlu_PLA+.json
   instead.
 - `--yes` (or `--plan-only`) is required in non-interactive shells; the bare
   `Proceed? [y/N]` prompt raises `EOFError` with no stdin.
+- `sync` updates **only** `kvParam.nozzle_temperature` for custom 99xxx entries
+  and only when a unique user preset match exists. Ties, system-preset matches,
+  and weak matches are skipped with a warning.
+- `sync` calls `cfs.py push` internally, which backs up the remote DB before
+  overwriting and reboots the printer by default. If the printer is busy, use
+  `--no-reboot` and reboot manually, or `--force-reboot` (kills the active print).
 - DB colors may be text names (e.g. "Midnight Black"); `preset` writes an
   empty `default_filament_colour` in that case to avoid a white swatch in
   OrcaSlicer. Hex colors (`#rrggbb`) are passed through.
