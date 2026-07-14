@@ -236,10 +236,16 @@ modification or a post-processing script.
 
 ## Open questions
 
-1. Does this affect other fields too (flow_ratio, PA, fan_speed, volumetric_speed)?
-   - `get_material_max_extrusion_speed` exists → likely overrides `filament_max_volumetric_speed`
-   - `SET_GCODE_VARIABLE ... VARIABLE=hotend_temp` → temp override confirmed
-   - Need to check if PA / flow_ratio are also overridden during toolchange
+1. **RESOLVED (2026-07-13):** Does this affect other fields too (flow_ratio, PA, fan_speed, volumetric_speed)?
+   - **`filament_max_volumetric_speed` is NOT a print override.** Verified via SSH log analysis:
+     - `get_material_max_extrusion_speed` reads the DB value, but does NOT set a persistent gcode variable
+     - No `SET_GCODE_VARIABLE MACRO=PRINTER_PARAM VARIABLE=max_volumetric_speed` in box_wrapper (only `hotend_temp` gets set)
+     - PRINTER_PARAM macro has no speed-related variable
+     - Log shows `max_volumetric_speed: 10` → `get material extrusion speed: 4` → `check_and_extrude extrude: 18.0, velocity: 250.0` — the DB value is used to calculate flush/extrude velocity (250-300 mm/min), NOT print speed
+     - `M220 S100` (reset) appears in log, not `M220 S<db_value>` — speed factor is reset after flush
+     - DB values (10, 21) are volumetric speeds (mm³/s) for flush calculation, not feedrate percentages
+   - **PA, flow_ratio, fan_speed, retraction:** confirmed NOT overridden — come from G-Code (slicer), not DB
+   - **Conclusion: `nozzle_temperature` is the ONLY kvParam field that persists as a print override.** The sync command only needs to sync this one field.
 2. What causes the 250°C spike during CAILAB T2 print start (step 11-12)?
    - Higher than both Orca (230) and DB (240) — possibly flush temp or material change temp
 3. Is there a config flag to disable DB temp override?
@@ -259,10 +265,319 @@ modification or a post-processing script.
 - [x] Confirm: is the override T0-specific or caused by second T0 in G-Code?
 - [x] Test CAILAB Silk on T0 to confirm T0 is the trigger
 - [x] Evaluate workaround options (options 1-5)
-- [ ] Inspect OrcaSlicer G-Code for T1/T2 prints — verify no second T-command
-- [ ] Check if other kvParam fields (flow_ratio, PA, fan_speed) are also overridden
+- [x] Inspect OrcaSlicer G-Code for T1/T2 prints — verify no second T-command
+- [x] Search OrcaSlicer GitHub repo for related issues and code root cause
+- [x] Check if other kvParam fields (flow_ratio, PA, fan_speed) are also overridden — only nozzle_temperature persists; filament_max_volumetric_speed is flush-only
 - [ ] Test 99004 (Cailab Bio) — at risk only if placed on T0
 - [ ] Consider: extend cfs.py/orca.py with a "sync temp" command to keep DB = Orca
+  - **Spec written:** [2026-07-13-sync-command-spec.md](2026-07-13-sync-command-spec.md) — covers preset structure, matching logic, `nozzle_temperature_initial_layer` limitation, scope, full command flow, edge cases
+- [x] Open a new upstream issue with the source-level analysis — [#14753](https://github.com/OrcaSlicer/OrcaSlicer/issues/14753)
+
+## Community evidence (OrcaSlicer GitHub, searched 2026-07-13)
+
+You are NOT the only one. The symptom is well-known in the K2/CFS community,
+but no one has publicly traced the root cause as far as this doc. The
+OrcaSlicer-side discussion stalled at "temperature not set correctly for
+single-color PETG/ABS" — the T0-specific second-T0 mechanism documented here
+is novel.
+
+### PR #7713 (merged Jan 7, 2025) — change_filament_gcode for K2 profiles
+https://github.com/SoftFever/OrcaSlicer/pull/7713
+
+Added the spiral-lift `change_filament_gcode` to K2/K2 Plus/K2 Pro profiles
+(fixing filament clogs on color changes). In the review thread (Dec 26, 2024),
+**Stevetm2** flagged the temperature problem explicitly:
+
+> "There have been a few people complaining about the filament temperature
+> not being set correctly for single color PETG, ABS etc. The below gcode
+> should also be added to the beginning of the filament change gcode to
+> rectify that. However, I don't believe it would fix multi-material swapping
+> such as when using PLA with PETG supports for example. A temp selection per
+> material may be required?"
+>
+> ```
+> ; filament start gcode
+> {if (position[2] > first_layer_height) }
+> M109 S[nozzle_temperature]
+> {else}
+> M109 S[first_layer_temperature]
+> {endif}
+> ```
+
+This is exactly the "Airbag M104" approach evaluated in Option 3 above.
+**The temperature fix was NOT merged** — PR #7713 only shipped the spiral-lift
+gcode + ramming disable. The M109 airbag remains a community suggestion with
+no upstream implementation.
+
+Stevetm2's caveat ("won't fix multi-material swapping") matches this doc's
+finding: the airbag in `filament_start_gcode` fires BEFORE OrcaSlicer's
+auto-inserted second T0, so the DB override still wins on T0.
+
+### Issue #8193 — firmware reverse-engineering comment
+https://github.com/SoftFever/OrcaSlicer/OrcaSlicer/issues/8193
+
+A contributor doing a clean-room reimplementation of the K2's Cython klipper
+extras posted firmware-side context that independently confirms this doc's
+mechanism:
+
+- **Material database location**: `/mnt/UDISK/creality/userdata/box/material_database.json` (~80 entries) — same path used by `cfs.py`
+- **Entry schema (verified from live printer)**: `base.{id, meterialType, name, brand, minTemp, maxTemp}` + `kvParam.{nozzle_temperature, filament_max_volumetric_speed}` — confirms `kvParam.nozzle_temperature` is the override source
+- **Multi-color toolchange**: "The stage machine for the per-tool cut / retract / load / flush sequence is driven from gcode macros in the printer's `box.cfg`, not from Python and not from the websocket. The slicer-printer contract on multi-color is largely a macro/gcode contract." — i.e. the DB temp override lives in the macro/firmware layer, not the slicer. OrcaSlicer cannot fix it from the slicer side alone.
+- **Tool numbering**: firmware uses `T<box><slot>` (e.g. `T1A`); there is no `T0` in the firmware's native model. The `T0/T1/T2/T3` the slicer emits map to slot indices, and the box_wrapper macro handles them.
+
+This confirms: the override is a firmware/macro-layer behavior, and the
+`filament_max_volumetric_speed` field is likely ALSO overridden (open
+question #1 in this doc — `get_material_max_extrusion_speed` exists in
+box_wrapper).
+
+### Discussion #8892 — "where is the filament change G-code?"
+https://github.com/OrcaSlicer/OrcaSlicer/discussions/8892
+
+Confirms T0-T3 are gcode macros on the printer side (not slicer-generated
+toolchange scripts like Bambu). The residual `T0`/`T1`/... macros are
+commented out in `gcode_macro.cfg` — the active implementation is in the
+compiled `box_wrapper.cpython-39.so`, exactly as this doc found.
+
+### Issue #1358 — toolchange G-Code structure
+https://github.com/SoftFever/OrcaSlicer/issues/1358
+
+Confirms OrcaSlicer auto-inserts `T[next_extruder]` and expects
+`change_filament_gcode` to contain it. A user note: "the slicer expects the
+'filament change g-code' section to contain at least one uncommented
+`T[next_extruder]`." This is the same auto-insertion behavior that produces
+the second T0 after `filament_start_gcode`.
+
+### Reddit — same symptom, no root cause
+- r/Creality "K2 Problem with temperature settings" (Jan 2025): ABS preset
+  275/270, "Immediately before the CFS starts moving material, the nozzle
+  temp drops" — same DB-override-on-toolchange symptom, no diagnosis.
+- r/Creality_k2 "K2 Plus Temperature Problem" (2025): generic PETG profile
+  220-270, temp not applied as expected.
+
+### Gap this doc closes
+
+| What community knew | What this doc adds |
+|---|---|
+| "Temp not set correctly for single-color PETG/ABS" (Stevetm2, PR #7713) | Root cause: `box_wrapper` DB override on every T-command |
+| `kvParam.nozzle_temperature` exists in DB schema (#8193) | It is a **direct override**, not a floor; fires via `set target max temp` → `M104 S<db_temp>` |
+| OrcaSlicer auto-inserts `T[next_extruder]` (#1358) | The **second T0** after `filament_start_gcode` is the trigger; no M104 follows it, so DB temp sticks |
+| M109 airbag in `filament_start_gcode` proposed (PR #7713) | Why it fails: airbag fires BEFORE the auto-inserted T0, so DB override re-applies after it |
+| — | T0-specific: T1/T2 have no second T-command, so slicer M104 is last and wins |
+| — | Workaround: DB temp = Orca temp (Option 1, currently applied to 99002) |
+
+No upstream fix exists yet. The same T0/CFS temperature symptom is
+reported in upstream issue [#11542](https://github.com/OrcaSlicer/OrcaSlicer/issues/11542)
+(K1C+CFS). The source-level root cause in OrcaSlicer is analyzed in the
+**GitHub follow-up (2026-07-13)** section below. A proper fix would require
+either:
+- OrcaSlicer: emit a trailing `M104 S[nozzle_temperature]` after the
+  auto-inserted `T[extruder]` in `filament_start_gcode` (slicer-side, needs
+  C++ change in `GCode.cpp` toolchange emitter)
+- Creality firmware: stop overriding `nozzle_temperature` on T-commands, or
+  gate it behind a config flag (firmware-side, closed source)
+
+## GitHub follow-up (2026-07-13)
+
+Searched `OrcaSlicer/OrcaSlicer` and `SoftFever/OrcaSlicer` for the T0/CFS
+temperature override. Found the closest upstream issue and the exact source
+code path that omits the `M104` after `T0`.
+
+### Closest upstream issue: #11542
+
+https://github.com/OrcaSlicer/OrcaSlicer/issues/11542
+
+Creality K1C + CFS, identical symptom. The issue author shows the gcode order
+difference:
+
+- **T0**: `start gcode` → `filament start gcode` → `T0`
+- **T1**: `start gcode` → `change filament gcode` → `T1` → `set temp M104` → `filament start gcode`
+
+Commenter **Archomeda** summarizes the mechanism:
+
+> "When the printer sees T[x], it will reset the temperature to the default
+> temperature from the CFS profile. And OrcaSlicer does not write the M104
+> gcode for a new temperature for T0, while it does for T1."
+
+This is the same T0-specific DB/CFS override documented here. The issue is
+still open.
+
+### Other related issues
+
+- [#11562](https://github.com/OrcaSlicer/OrcaSlicer/issues/11562) — K2 Pro w/
+  CFS crashes after filament change (bad coordinates after `; Filament gcode`).
+- [#9472](https://github.com/OrcaSlicer/OrcaSlicer/issues/9472) — `T0` code
+  generated in single-extruder setup; `Manual Filament Change` replaces `T0`
+  with `; MANUAL_TOOL_CHANGE T0`.
+- [#6089](https://github.com/OrcaSlicer/OrcaSlicer/issues/6089) — extra `M600`
+  / filament-change gcode at print start.
+- [#11368](https://github.com/OrcaSlicer/OrcaSlicer/issues/11368) — `M600`
+  start location.
+- [#13764](https://github.com/OrcaSlicer/OrcaSlicer/issues/13764) — standby
+  temperature switching order for dual extruders (not CFS, but related to
+  temperature ordering around toolchanges).
+- [#4271](https://github.com/OrcaSlicer/OrcaSlicer/issues/4271) — manual
+  filament change temperature ordering (closed).
+
+### Code root cause in OrcaSlicer
+
+The relevant source is in `src/libslic3r/GCode.cpp` in `GCode::set_extruder(...)`
+(current `main` at `ec96ca17b81250798ec941347c9c57f6c3e7d8bb`).
+
+`GCodeWriter::set_extruders()` decides whether the print is "multi-extruder"
+based on the maximum extruder ID used
+([`src/libslic3r/GCodeWriter.cpp:123`](https://github.com/OrcaSlicer/OrcaSlicer/blob/ec96ca17b81250798ec941347c9c57f6c3e7d8bb/src/libslic3r/GCodeWriter.cpp#L123)):
+
+```cpp
+this->multiple_extruders = !extruder_ids.empty() &&
+                           (*std::max_element(extruder_ids.begin(), extruder_ids.end())) > 0;
+```
+
+If the print only uses **T0**, `multiple_extruders` is `false`. That makes
+`GCode::set_extruder()` take the **single-extruder branch**
+([`src/libslic3r/GCode.cpp:7759-7795`](https://github.com/OrcaSlicer/OrcaSlicer/blob/ec96ca17b81250798ec941347c9c57f6c3e7d8bb/src/libslic3r/GCode.cpp#L7759-L7795)):
+
+```cpp
+std::string GCode::set_extruder(unsigned int new_filament_id, double print_z, bool by_object, int toolchange_temp_override)
+{
+    int new_extruder_id = get_extruder_id(new_filament_id);
+    if (!m_writer.need_toolchange(new_filament_id))
+        return "";
+
+    // if we are running a single-extruder setup, just set the extruder and return nothing
+    if (!m_writer.multiple_extruders) {
+        this->placeholder_parser().set("current_extruder", new_filament_id);
+        this->placeholder_parser().set("retraction_distance_when_ec", m_config.retraction_distances_when_ec.get_at(new_filament_id));
+        this->placeholder_parser().set("long_retraction_when_ec", m_config.long_retractions_when_ec.get_at(new_filament_id));
+
+        std::string gcode;
+        // Append the filament start G-code.
+        const std::string &filament_start_gcode = m_config.filament_start_gcode.get_at(new_filament_id);
+        if (! filament_start_gcode.empty()) {
+            // Process the filament_start_gcode for the filament.
+            DynamicConfig config;
+            config.set_key_value("layer_num", new ConfigOptionInt(m_layer_index));
+            config.set_key_value("layer_z", new ConfigOptionFloat(this->writer().get_position().z() - m_config.z_offset.value));
+            config.set_key_value("max_layer_z", new ConfigOptionFloat(m_max_layer_z));
+            config.set_key_value("filament_extruder_id", new ConfigOptionInt(int(new_filament_id)));
+            config.set_key_value("retraction_distance_when_cut",
+                                 new ConfigOptionFloat(m_config.retraction_distances_when_cut.get_at(new_filament_id)));
+            config.set_key_value("long_retraction_when_cut", new ConfigOptionBool(m_config.long_retractions_when_cut.get_at(new_filament_id)));
+
+            gcode += this->placeholder_parser_process("filament_start_gcode", filament_start_gcode, new_filament_id, &config);
+            check_add_eol(gcode);
+        }
+        if (m_config.enable_pressure_advance.get_at(new_filament_id)) {
+            gcode += m_writer.set_pressure_advance(m_config.pressure_advance.get_at(new_filament_id));
+            // Orca: Adaptive PA
+            // Reset Adaptive PA processor last PA value
+            m_pa_processor->resetPreviousPA(m_config.pressure_advance.get_at(new_filament_id));
+        }
+
+        gcode += m_writer.toolchange(new_filament_id);
+        return gcode;
+    }
+```
+
+This branch emits `filament_start_gcode` and then `T0`, but **never emits a
+follow-up `M104` or `M109`**. The `M104` airbag inside `filament_start_gcode`
+is placed before `T0`, so the CFS/DB override wins.
+
+For **T1/T2** (or any print with `extruder_id > 0` used), `multiple_extruders`
+is `true` and the multi-extruder branch is used
+([`src/libslic3r/GCode.cpp:8035-8085`](https://github.com/OrcaSlicer/OrcaSlicer/blob/ec96ca17b81250798ec941347c9c57f6c3e7d8bb/src/libslic3r/GCode.cpp#L8035-L8085)):
+
+```cpp
+std::string toolchange_command = m_writer.toolchange(new_filament_id);
+if (!custom_gcode_changes_tool(toolchange_gcode_parsed, m_writer.toolchange_prefix(), new_filament_id))
+    gcode += toolchange_command;
+else {
+    // user provided his own toolchange gcode, no need to do anything
+}
+
+// Set the temperature if the wipe tower didn't (not needed for non-single extruder MM)
+if (m_config.single_extruder_multi_material && !m_config.enable_prime_tower) {
+    int temp = (m_layer_index <= 0 ? m_config.nozzle_temperature_initial_layer.get_at(new_filament_id) :
+                                     m_config.nozzle_temperature.get_at(new_filament_id));
+
+    gcode += m_writer.set_temperature(temp, false);
+}
+
+this->placeholder_parser().set("current_extruder", new_filament_id);
+this->placeholder_parser().set("current_hotend", hotend_id_for_gcode_placeholder(m_config, new_extruder_id));
+this->placeholder_parser().set("retraction_distance_when_cut", m_config.retraction_distances_when_cut.get_at(new_filament_id));
+this->placeholder_parser().set("long_retraction_when_cut", m_config.long_retractions_when_cut.get_at(new_filament_id));
+this->placeholder_parser().set("retraction_distance_when_ec", m_config.retraction_distances_when_ec.get_at(new_filament_id));
+this->placeholder_parser().set("long_retraction_when_ec", m_config.long_retractions_when_ec.get_at(new_filament_id));
+
+
+// Append the filament start G-code.
+const std::string &filament_start_gcode = m_config.filament_start_gcode.get_at(new_filament_id);
+if (! filament_start_gcode.empty()) {
+    // Process the filament_start_gcode for the new filament.
+    DynamicConfig config;
+    config.set_key_value("layer_num", new ConfigOptionInt(m_layer_index));
+    config.set_key_value("layer_z", new ConfigOptionFloat(this->writer().get_position().z() - m_config.z_offset.value));
+    config.set_key_value("max_layer_z", new ConfigOptionFloat(m_max_layer_z));
+    config.set_key_value("filament_extruder_id", new ConfigOptionInt(int(new_filament_id)));
+    if (toolchange_temp_override > 0) {
+        auto temps = m_config.nozzle_temperature.values;
+        if (new_filament_id < temps.size())
+            temps[new_filament_id] = toolchange_temp_override;
+        config.set_key_value("temperature", new ConfigOptionInts(temps));
+        config.set_key_value("nozzle_temperature", new ConfigOptionInts(temps));
+
+        auto first_layer_temps = m_config.nozzle_temperature_initial_layer.values;
+        if (new_filament_id < first_layer_temps.size())
+            first_layer_temps[new_filament_id] = toolchange_temp_override;
+        config.set_key_value("first_layer_temperature", new ConfigOptionInts(first_layer_temps));
+        config.set_key_value("nozzle_temperature_initial_layer", new ConfigOptionInts(first_layer_temps));
+    }
+    gcode += this->placeholder_parser_process("filament_start_gcode", filament_start_gcode, new_filament_id, &config);
+    if (add_change_filament_624) {
+        gcode += "M625\n";
+        add_change_filament_624 = false;
+    }
+    check_add_eol(gcode);
+}
+```
+
+Here the toolchange is emitted, then an `M104` (non-blocking), then
+`filament_start_gcode`. So the slicer temperature is the last temperature
+command after the `T`-command, and it overrides the DB/CFS temperature. This is
+why T1/T2 work and T0 does not.
+
+### Current K2 profile check
+
+- [`resources/profiles/Creality/machine/Creality K2 Plus 0.4 nozzle.json`](https://github.com/OrcaSlicer/OrcaSlicer/blob/ec96ca17b81250798ec941347c9c57f6c3e7d8bb/resources/profiles/Creality/machine/Creality%20K2%20Plus%200.4%20nozzle.json):
+  `machine_start_gcode` contains `T[initial_no_support_extruder]` followed by
+  `M109 S[nozzle_temperature_initial_layer]`. This first `T0` is fine.
+- [`resources/profiles/Creality/filament/eSUN PETG-Basic @K2 Plus-all.json`](https://github.com/OrcaSlicer/OrcaSlicer/blob/ec96ca17b81250798ec941347c9c57f6c3e7d8bb/resources/profiles/Creality/filament/eSUN%20PETG-Basic%20@K2%20Plus-all.json):
+  `filament_start_gcode` contains the `M104` airbag. In the single-extruder
+  branch this airbag is evaluated before the auto-inserted `T0`, so it does not
+  restore the Orca temp for T0.
+
+### Fix proposal
+
+OrcaSlicer should emit `m_writer.set_temperature(temp, false)` in the
+single-extruder branch after `m_writer.toolchange(new_filament_id)`, mirroring
+the multi-extruder branch. This would produce `T0` → `M104 S[nozzle_temperature]`
+for the initial T0, and the slicer temperature would win again. The
+`filament_start_gcode` airbag would then be redundant but harmless.
+
+Alternatively, the `T` command in the single-extruder branch could be moved
+before `filament_start_gcode`, but that would change the semantics of
+`filament_start_gcode` and could break existing presets.
+
+### Upstream status
+
+Opened upstream issue [#14753](https://github.com/OrcaSlicer/OrcaSlicer/issues/14753)
+with the source-level root cause and a minimal patch proposal. The older
+symptom-only issue is [#11542](https://github.com/OrcaSlicer/OrcaSlicer/issues/11542);
+the root cause was also cross-posted there so the two threads are linked.
+No PR implements the fix yet. The K2 profile community has been aware of the
+symptom since [PR #7713](https://github.com/SoftFever/OrcaSlicer/pull/7713)
+(Dec 2024), but the fix has been stuck on the `M109` airbag approach, which is
+ineffective because it fires before the auto-inserted `T0`.
 
 ## Related
 
