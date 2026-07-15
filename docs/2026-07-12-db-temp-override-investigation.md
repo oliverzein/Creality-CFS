@@ -14,8 +14,9 @@ Printing "eSUN PETG Basic Optimized" (DB id 99002) via OrcaSlicer:
 | 99001 | Sunlu PLA+ Optimized  | 215       | 210     | T1   | 215     | Orca wins ✓ |
 | 99002 | eSUN PETG Basic Opt.   | 240       | 250→240 | T0   | 250→240 | DB fixed, now OK |
 | 99003 | CAILAB PLA Silk        | 230       | 240     | T2   | 230     | Orca wins ✓ |
-| 99003 | CAILAB PLA Silk        | 230       | 240     | T0   | 240     | DB wins ✗ (confirmed T0 bug) |
-| 99004 | Cailab PLA+ Bio        | 222       | 230     | —    | ?       | untested (at risk on T0) |
+| 99003 | CAILAB PLA Silk        | 230       | 240     | T0   | 240     | DB wins ✗ (confirmed T0 bug, pre-fix) |
+| 99004 | Cailab PLA+ Bio        | 222       | 230     | —    | ?       | untested (at risk on T0 pre-fix) |
+| (any)| (any preset)           | 228       | 230     | T0   | 228     | Orca wins ✓ (post-fix, verified 2026-07-14) |
 
 ## Root cause (confirmed via firmware analysis 2026-07-13)
 
@@ -230,9 +231,11 @@ restore the filament-specific temp.
 | Post-processing script | Yes | Yes | Rejected by user |
 | "Change at layer 1" | N/A | N/A | Does not exist in OrcaSlicer |
 
-**Current approach:** Option 1 (DB temp = Orca temp) for T0 filaments.
-No satisfactory universal fix exists without either OrcaSlicer source
-modification or a post-processing script.
+**Current approach:** Option 1 (DB temp = Orca temp) for T0 filaments —
+**interim only**. The proper slicer-side fix is implemented in PR
+[#14763](https://github.com/OrcaSlicer/OrcaSlicer/pull/14763) (2026-07-14) and
+verified on K2 + CFS hardware. Once merged and released, the Option 1
+workaround is no longer required.
 
 ## Open questions
 
@@ -272,6 +275,9 @@ modification or a post-processing script.
 - [ ] Consider: extend cfs.py/orca.py with a "sync temp" command to keep DB = Orca
   - **Spec written:** [2026-07-13-sync-command-spec.md](2026-07-13-sync-command-spec.md) — covers preset structure, matching logic, `nozzle_temperature_initial_layer` limitation, scope, full command flow, edge cases
 - [x] Open a new upstream issue with the source-level analysis — [#14753](https://github.com/OrcaSlicer/OrcaSlicer/issues/14753)
+- [x] Implement slicer-side fix in OrcaSlicer C++ — PR [#14763](https://github.com/OrcaSlicer/OrcaSlicer/pull/14763) (2026-07-14)
+- [x] Add Catch2 regression test in `tests/fff_print/test_multifilament.cpp`
+- [x] Verify fix on real K2 + CFS hardware (2026-07-14) — Orca preset temp wins over DB override on T0
 
 ## Community evidence (OrcaSlicer GitHub, searched 2026-07-13)
 
@@ -574,10 +580,56 @@ Opened upstream issue [#14753](https://github.com/OrcaSlicer/OrcaSlicer/issues/1
 with the source-level root cause and a minimal patch proposal. The older
 symptom-only issue is [#11542](https://github.com/OrcaSlicer/OrcaSlicer/issues/11542);
 the root cause was also cross-posted there so the two threads are linked.
-No PR implements the fix yet. The K2 profile community has been aware of the
-symptom since [PR #7713](https://github.com/SoftFever/OrcaSlicer/pull/7713)
-(Dec 2024), but the fix has been stuck on the `M109` airbag approach, which is
-ineffective because it fires before the auto-inserted `T0`.
+
+**Fix implemented and PR opened:** [#14763](https://github.com/OrcaSlicer/OrcaSlicer/pull/14763)
+(2026-07-14). The patch adds the missing `m_writer.set_temperature(temp, false)`
+block to the single-extruder branch of `GCode::set_extruder()`, mirroring the
+multi-extruder branch. Gated by the identical condition
+(`single_extruder_multi_material && !enable_prime_tower`). Includes a Catch2
+regression test in `tests/fff_print/test_multifilament.cpp`. Full `fff_print`
+suite passes (66 tests, 695 assertions, `--order rand`).
+
+The K2 profile community has been aware of the symptom since
+[PR #7713](https://github.com/SoftFever/OrcaSlicer/pull/7713) (Dec 2024), but
+the fix had been stuck on the `M109` airbag approach, which is ineffective
+because it fires before the auto-inserted `T0`. PR #14763 implements the
+proper slicer-side fix proposed in this doc.
+
+## Hardware verification (2026-07-14)
+
+Fix verified end-to-end on real Creality K2 + CFS hardware.
+
+### Test setup
+- OrcaSlicer preset `nozzle_temperature` = **228°C**
+- Printer DB (CFS RFID) `nozzle_temperature` = **230°C**
+- Single-extruder MM, `enable_prime_tower=false`
+- Expected: print runs at **228°C** (Orca preset wins over DB override)
+
+### Printer log evidence (`master-server.log`)
+
+```
+13:23:02  target_temp: 228.00   ← M104 S228 (initial heat, Orca preset)
+13:23:06  target_temp: 230.00   ← T0 fires, CFS applies DB override
+13:23:07  target_temp: 228.00   ← M104 S228 (this fix), overrides DB
+
+13:23:17  Heartbeat nuzzle: 0=22825   ← nozzle at 228.25°C
+13:24:10  Heartbeat nuzzle: 0=22802   ← nozzle at 228.02°C
+```
+
+### Result
+
+Nozzle stabilizes at **228°C** (Orca preset), not 230°C (DB). The new `M104`
+emitted after `T0` correctly overrides the firmware/CFS temperature override
+on the T-command.
+
+Before this fix, the last temperature command after `T0` was the DB override
+(230°C), so the print ran at the wrong temperature. After the fix, the slicer
+temperature is the last command after `T0`, matching the multi-extruder branch
+behavior.
+
+This confirms the fix proposal from the "Fix proposal" section above works on
+real hardware. The Option 1 workaround (DB temp = Orca temp) is no longer
+required once PR #14763 is merged and released.
 
 ## Related
 
